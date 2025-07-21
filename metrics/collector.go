@@ -14,22 +14,22 @@ type Collector struct {
 	bulkRequestProcessLatency *prometheus.Desc
 }
 
-func (s *Collector) Describe(ch chan<- *prometheus.Desc) {
-	prometheus.DescribeByCollect(s, ch)
+func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
+	prometheus.DescribeByCollect(c, ch)
 }
 
-func (s *Collector) Collect(ch chan<- prometheus.Metric) {
-	bulkMetric := s.bulk.GetMetric()
+func (c *Collector) Collect(ch chan<- prometheus.Metric) {
+	bulkMetric := c.bulk.GetMetric()
 
 	ch <- prometheus.MustNewConstMetric(
-		s.processLatency,
+		c.processLatency,
 		prometheus.GaugeValue,
 		float64(bulkMetric.ProcessLatencyMs),
 		[]string{}...,
 	)
 
 	ch <- prometheus.MustNewConstMetric(
-		s.bulkRequestProcessLatency,
+		c.bulkRequestProcessLatency,
 		prometheus.GaugeValue,
 		float64(bulkMetric.BulkRequestProcessLatencyMs),
 		[]string{}...,
@@ -56,7 +56,6 @@ func NewMetricCollector(bulk *cassandra.Bulk) *Collector {
 	}
 }
 
-// Unregister removes the collector from Prometheus registry
 func (c *Collector) Unregister() {
 	prometheus.Unregister(c)
 }

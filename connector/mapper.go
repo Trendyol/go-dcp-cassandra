@@ -6,6 +6,9 @@ import (
 	"go-dcp-cassandra/cassandra"
 	config "go-dcp-cassandra/configs"
 	"go-dcp-cassandra/couchbase"
+	"log"
+	"strconv"
+	"strings"
 )
 
 type Mapper func(event couchbase.Event) []cassandra.Model
@@ -49,25 +52,81 @@ func findCollectionTableMapping(collectionName string) config.CollectionTableMap
 	panic(fmt.Sprintf("no mapping found for collection: %s", collectionName))
 }
 
+func getNestedField(document map[string]interface{}, fieldPath string) (interface{}, bool) {
+	if strings.Contains(fieldPath, ".") {
+		parts := strings.Split(fieldPath, ".")
+		current := document
+
+		for i, part := range parts {
+			if i == len(parts)-1 {
+				if value, exists := current[part]; exists {
+					return value, true
+				}
+				return nil, false
+			} else {
+				if value, exists := current[part]; exists {
+					if nested, ok := value.(map[string]interface{}); ok {
+						current = nested
+					} else {
+						return nil, false
+					}
+				} else {
+					return nil, false
+				}
+			}
+		}
+	}
+
+	if value, exists := document[fieldPath]; exists {
+		return value, true
+	}
+	return nil, false
+}
+
+func convertFieldValue(fieldPath string, value interface{}) interface{} {
+	if fieldPath == "date" {
+		switch v := value.(type) {
+		case float64:
+			return v
+		case string:
+			if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+				return parsed
+			}
+			return 0.0
+		case int:
+			return float64(v)
+		case int64:
+			return float64(v)
+		}
+	}
+
+	return value
+}
+
 func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Event) cassandra.Raw {
 	var sourceDocument map[string]interface{}
 	if err := json.Unmarshal(event.Value, &sourceDocument); err != nil {
+		log.Printf("JSON unmarshal error for doc %s: %v", string(event.Key), err)
 		sourceDocument = make(map[string]interface{})
 	}
+
+	log.Printf("Processing doc %s with mappings: %+v", string(event.Key), mapping.FieldMappings)
 
 	targetDocument := make(map[string]interface{})
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
 		if sourceField == "id" {
-			targetDocument[cassandraColumn] = string(event.Key)
-		} else if sourceField == "documentData" {
-			targetDocument[cassandraColumn] = string(event.Value)
-		} else if fieldValue, exists := sourceDocument[sourceField]; exists {
-			targetDocument[cassandraColumn] = fieldValue
+			log.Printf("Skipping id mapping for column %s, will use rawModel.ID", cassandraColumn)
+		} else if fieldValue, exists := getNestedField(sourceDocument, sourceField); exists {
+			targetDocument[cassandraColumn] = convertFieldValue(sourceField, fieldValue)
 		} else {
 			targetDocument[cassandraColumn] = nil
 		}
 	}
+
+	targetDocument["id"] = string(event.Key)
+
+	log.Printf("Final targetDocument for doc %s: %+v", string(event.Key), targetDocument)
 
 	return cassandra.Raw{
 		Table:     mapping.TableName,
@@ -90,11 +149,12 @@ func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Eve
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
 		if sourceField == "id" {
-			filter[cassandraColumn] = string(event.Key)
-		} else if fieldValue, exists := sourceDocument[sourceField]; exists {
-			filter[cassandraColumn] = fieldValue
+		} else if fieldValue, exists := getNestedField(sourceDocument, sourceField); exists {
+			filter[cassandraColumn] = convertFieldValue(sourceField, fieldValue)
 		}
 	}
+
+	filter["id"] = string(event.Key)
 
 	return cassandra.Raw{
 		Table:     mapping.TableName,

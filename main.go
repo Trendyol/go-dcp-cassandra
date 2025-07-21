@@ -2,60 +2,42 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"go-dcp-cassandra/cassandra"
-	config "go-dcp-cassandra/configs"
-	"go-dcp-cassandra/couchbase"
-	"go-dcp-cassandra/interface/rest"
-	"go-dcp-cassandra/metrics"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"go-dcp-cassandra/cassandra"
+	config "go-dcp-cassandra/configs"
+	"go-dcp-cassandra/couchbase"
+	"go-dcp-cassandra/interface/rest"
+	"go-dcp-cassandra/metrics"
 )
 
-func customCassandraMapper(event couchbase.Event, table string) []cassandra.Model {
-	var document map[string]interface{}
-	if err := json.Unmarshal(event.Value, &document); err != nil {
-		log.Printf("Failed to unmarshal event.Value - Key: %s, Error: %v", string(event.Key), err)
-		return nil
+func customCassandraMapper(event couchbase.Event) []cassandra.Model {
+	if event.IsMutated {
+		// Use the default mapper logic
+		return Map(event)
+	} else if event.IsDeleted || event.IsExpired {
+		// Handle delete operations
+		return Map(event)
 	}
-
-	document["id"] = string(event.Key)
-
-	document["timestamp"] = time.Now()
-
-	operation := determineOperation(event)
-	model := &cassandra.Raw{
-		Table:     table,
-		Document:  document,
-		Operation: operation,
-	}
-
-	if operation == cassandra.Delete {
-		handleDeleteOperation(model, document)
-	}
-
-	return []cassandra.Model{model}
+	return nil
 }
 
-func handleDeleteOperation(model *cassandra.Raw, document map[string]interface{}) {
-	model.Document = nil
-	model.Filter = map[string]interface{}{
-		"id": document["id"],
+func DefaultMapper(event couchbase.Event) []cassandra.Model {
+	if event.IsMutated {
+		mapping := findCollectionTableMapping(event.CollectionName)
+		model := buildUpsertModel(mapping, event)
+		return []cassandra.Model{&model}
+	} else if event.IsDeleted || event.IsExpired {
+		mapping := findCollectionTableMapping(event.CollectionName)
+		model := buildDeleteModel(mapping, event)
+		return []cassandra.Model{&model}
 	}
-}
 
-func determineOperation(event couchbase.Event) cassandra.OperationType {
-	switch {
-	case event.IsDeleted || event.IsExpired:
-		return cassandra.Delete
-	case event.IsMutated:
-		return cassandra.Upsert
-	default:
-		return cassandra.Insert
-	}
+	return nil
 }
 
 func main() {
@@ -82,15 +64,16 @@ func main() {
 	var connector Connector
 	var err error
 
+	log.Printf("CollectionTableMapping length: %d", len(cfg.Cassandra.CollectionTableMapping))
+	log.Printf("useDefaultMapper: %v", useDefaultMapper)
+
 	if useDefaultMapper {
 		log.Println("Using default mapper with collection-table mapping")
 		connector, err = NewConnectorBuilder(&cfg).Build()
 	} else {
 		log.Println("Using custom mapper")
 		connector, err = NewConnectorBuilder(&cfg).
-			SetMapper(func(event couchbase.Event) []cassandra.Model {
-				return customCassandraMapper(event, cfg.Cassandra.TableName)
-			}).
+			SetMapper(customCassandraMapper).
 			Build()
 	}
 

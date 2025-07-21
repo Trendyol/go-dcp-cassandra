@@ -26,24 +26,17 @@ type connector struct {
 	config *config.Connector
 }
 
-type ConnectorBuilder struct {
+type Builder struct {
 	cfg    *config.Connector
 	mapper Mapper
 }
 
-func NewConnectorBuilder(cfg *config.Connector) ConnectorBuilder {
-	return ConnectorBuilder{
-		cfg:    cfg,
-		mapper: DefaultMapper,
-	}
-}
-
-func (c ConnectorBuilder) SetMapper(mapper Mapper) ConnectorBuilder {
+func (c Builder) SetMapper(mapper Mapper) Builder {
 	c.mapper = mapper
 	return c
 }
 
-func (c ConnectorBuilder) Build() (Connector, error) {
+func (c Builder) Build() (Connector, error) {
 	conn := &connector{
 		mapper: c.mapper,
 		config: c.cfg,

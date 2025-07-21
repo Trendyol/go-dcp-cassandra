@@ -36,19 +36,3 @@ func (r *Raw) Convert() *ExecArgs {
 		Filter:    r.Filter,
 	}
 }
-
-type Fields struct{}
-
-const (
-	Id = "id"
-)
-
-func (Fields) GetFieldMappings() map[string]string {
-	return map[string]string{
-		"documentid": Id,
-	}
-}
-
-func (Fields) GetPrimaryKeys() []string {
-	return []string{Id}
-}
