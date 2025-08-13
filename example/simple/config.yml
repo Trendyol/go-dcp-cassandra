@@ -35,5 +35,3 @@ cassandra:
         data: "documentData"
         metadata: "meta"
         status: "status"
-
-appPort: :9001
