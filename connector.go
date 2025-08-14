@@ -1,9 +1,11 @@
-package main
+package dcpcassandra
 
 import (
 	"context"
+	"errors"
 	"go-dcp-cassandra/cassandra"
 	config "go-dcp-cassandra/configs"
+	connectorpkg "go-dcp-cassandra/connector"
 	"go-dcp-cassandra/couchbase"
 	"os"
 	"os/signal"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/Trendyol/go-dcp"
 	"github.com/Trendyol/go-dcp/models"
+	"gopkg.in/yaml.v3"
 )
 
 type Connector interface {
@@ -27,15 +30,91 @@ type connector struct {
 }
 
 type ConnectorBuilder struct {
-	cfg    *config.Connector
+	config any
 	mapper Mapper
 }
 
-func NewConnectorBuilder(cfg *config.Connector) ConnectorBuilder {
-	return ConnectorBuilder{
-		cfg:    cfg,
-		mapper: DefaultMapper,
+func newConnectorConfigFromPath(path string) (*config.Connector, error) {
+	file, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
+	var c config.Connector
+	err = yaml.Unmarshal(file, &c)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func newConfig(cf any) (*config.Connector, error) {
+	switch v := cf.(type) {
+	case *config.Connector:
+		return v, nil
+	case config.Connector:
+		return &v, nil
+	case string:
+		return newConnectorConfigFromPath(v)
+	default:
+		return nil, errors.New("invalid config")
+	}
+}
+
+func newConnector(cf any, mapper Mapper) (Connector, error) {
+	cfg, err := newConfig(cf)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ApplyDefaults()
+
+	var finalMapper Mapper
+	if len(cfg.Cassandra.CollectionTableMapping) > 0 {
+		finalMapper = connectorpkg.DefaultMapper
+	} else {
+		finalMapper = mapper
+	}
+
+	conn := &connector{
+		mapper: finalMapper,
+		config: cfg,
+	}
+
+	bulk, err := cassandra.NewBulk(cfg, func() {})
+	if err != nil {
+		return nil, err
+	}
+	conn.bulk = bulk
+
+	dcpClient, err := dcp.NewDcp(&cfg.Dcp, conn.listener)
+	if err != nil {
+		return nil, err
+	}
+	conn.dcp = dcpClient
+
+	connectorpkg.SetCollectionTableMappings(&cfg.Cassandra.CollectionTableMapping)
+
+	return conn, nil
+}
+
+func NewConnectorBuilder(config any) ConnectorBuilder {
+	return ConnectorBuilder{
+		config: config,
+		mapper: SimpleDefaultMapper,
+	}
+}
+
+func SimpleDefaultMapper(event couchbase.Event) []cassandra.Model {
+	var raw = cassandra.Raw{
+		Table: "example_table",
+		Document: map[string]interface{}{
+			"id":   string(event.Key),
+			"data": string(event.Value),
+		},
+		Operation: cassandra.Upsert,
+		ID:        string(event.Key),
+	}
+
+	return []cassandra.Model{&raw}
 }
 
 func (c ConnectorBuilder) SetMapper(mapper Mapper) ConnectorBuilder {
@@ -44,26 +123,7 @@ func (c ConnectorBuilder) SetMapper(mapper Mapper) ConnectorBuilder {
 }
 
 func (c ConnectorBuilder) Build() (Connector, error) {
-	conn := &connector{
-		mapper: c.mapper,
-		config: c.cfg,
-	}
-
-	bulk, err := cassandra.NewBulk(c.cfg, func() {})
-	if err != nil {
-		return nil, err
-	}
-	conn.bulk = bulk
-
-	dcpClient, err := dcp.NewDcp(&c.cfg.Dcp, conn.listener)
-	if err != nil {
-		return nil, err
-	}
-	conn.dcp = dcpClient
-
-	SetCollectionTableMappings(&c.cfg.Cassandra.CollectionTableMapping)
-
-	return conn, nil
+	return newConnector(c.config, c.mapper)
 }
 
 func (c *connector) Start() {

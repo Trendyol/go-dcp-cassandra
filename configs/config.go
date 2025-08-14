@@ -1,15 +1,10 @@
 package config
 
 import (
-	"log"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/Trendyol/go-dcp/config"
-	"github.com/go-playground/validator/v10"
-	"github.com/kelseyhightower/envconfig"
-	"github.com/spf13/viper"
 )
 
 type CollectionTableMapping struct {
@@ -62,15 +57,6 @@ type Connector struct {
 	Cassandra Cassandra  `yaml:"cassandra" mapstructure:"cassandra"`
 	Dcp       config.Dcp `yaml:",inline" mapstructure:",squash"`
 	AppPort   string     `yaml:"appPort"`
-}
-
-type secretCassandra struct {
-	Username string `yaml:"username" mapstructure:"username"`
-	Password string `yaml:"password" mapstructure:"password"`
-}
-
-type secretConfig struct {
-	Cassandra secretCassandra `yaml:"cassandra" mapstructure:"cassandra"`
 }
 
 func (c *Cassandra) setDefaults() {
@@ -126,55 +112,6 @@ func (c *Cassandra) setDefaults() {
 	}
 }
 
-func NewAppConfig() Connector {
-	if os.Getenv("CONFIG_ENV_ENABLED") == "true" {
-		log.Println("Reading configuration from environment variables")
-		return readFromEnv()
-	}
-	log.Println("Reading configuration from the file")
-	return readFromConfigFileWithSecret()
-}
-
-func readFromEnv() Connector {
-	var config Connector
-	envconfig.MustProcess("", &config)
-	config.Cassandra.setDefaults()
-	return config
-}
-
-func readFromConfigFileWithSecret() Connector {
-	viper.AddConfigPath("./configs")
-	readConfigFile("config")
-	readConfigFile("secret")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	var config Connector
-	err := viper.Unmarshal(&config)
-	if err != nil {
-		log.Fatalf("Error unmarshalling the config: %s", err)
-	}
-	var secret secretConfig
-	_ = viper.Unmarshal(&secret)
-	if secret.Cassandra.Username != "" {
-		config.Cassandra.Username = secret.Cassandra.Username
-	}
-	if secret.Cassandra.Password != "" {
-		config.Cassandra.Password = secret.Cassandra.Password
-	}
-	config.Cassandra.setDefaults()
-	validate := validator.New()
-	err = validate.Struct(&config)
-	if err != nil {
-		log.Fatalf("Invalid config file: %s", err)
-	}
-	return config
-}
-
-func readConfigFile(configName string) {
-	viper.SetConfigName(configName)
-	viper.SetConfigType("yml")
-	err := viper.MergeInConfig()
-	if err != nil {
-		log.Fatalf("Error reading %s file: %s", configName, err)
-	}
+func (c *Connector) ApplyDefaults() {
+	c.Cassandra.setDefaults()
 }

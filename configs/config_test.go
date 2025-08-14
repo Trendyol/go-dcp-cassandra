@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -114,36 +113,25 @@ func TestCassandra_SetDefaults_CustomValues(t *testing.T) {
 	assert.Equal(t, 2*time.Second, cassandra.RetryPolicy.MaxRetryDelay)
 }
 
-func TestNewAppConfig_WithConsistency(t *testing.T) {
-	// Test environment variable
-	os.Setenv("CONFIG_ENV_ENABLED", "true")
-	os.Setenv("CASSANDRA_CONSISTENCY", "ALL")
+func TestConnector_ApplyDefaults(t *testing.T) {
+	config := Connector{
+		Cassandra: Cassandra{
+			Hosts:       []string{"localhost:9042"},
+			Keyspace:    "test_keyspace",
+			Consistency: "INVALID_CONSISTENCY",
+		},
+	}
 
-	config := NewAppConfig()
-	assert.Equal(t, "ALL", config.Cassandra.Consistency)
+	config.ApplyDefaults()
+	assert.Equal(t, "QUORUM", config.Cassandra.Consistency, "Invalid consistency should default to QUORUM")
 
-	// Cleanup
-	os.Unsetenv("CONFIG_ENV_ENABLED")
-	os.Unsetenv("CASSANDRA_CONSISTENCY")
-}
+	config.Cassandra.Consistency = "ONE"
+	config.ApplyDefaults()
+	assert.Equal(t, "ONE", config.Cassandra.Consistency, "Valid consistency should remain unchanged")
 
-func TestNewAppConfig_WithBatchConfig(t *testing.T) {
-	// Test environment variables for batch config
-	os.Setenv("CONFIG_ENV_ENABLED", "true")
-	os.Setenv("CASSANDRA_USEBATCH", "true")
-	os.Setenv("CASSANDRA_BATCHTYPE", "unlogged")
-	os.Setenv("CASSANDRA_MAXBATCHSIZE", "2000")
-
-	config := NewAppConfig()
-	assert.True(t, config.Cassandra.UseBatch)
-	assert.Equal(t, "unlogged", config.Cassandra.BatchType)
-	assert.Equal(t, 2000, config.Cassandra.MaxBatchSize)
-
-	// Cleanup
-	os.Unsetenv("CONFIG_ENV_ENABLED")
-	os.Unsetenv("CASSANDRA_USEBATCH")
-	os.Unsetenv("CASSANDRA_BATCHTYPE")
-	os.Unsetenv("CASSANDRA_MAXBATCHSIZE")
+	config.Cassandra.Consistency = ""
+	config.ApplyDefaults()
+	assert.Equal(t, "QUORUM", config.Cassandra.Consistency, "Empty consistency should default to QUORUM")
 }
 
 func TestConnector_Validation(t *testing.T) {

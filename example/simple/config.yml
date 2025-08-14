@@ -1,6 +1,8 @@
 hosts:
   - http://localhost:8091
 bucketName: example_bucket
+username: username
+password: password
 logging:
   level: info
 dcp:
@@ -20,6 +22,8 @@ cassandra:
     - localhost:9042
   keyspace: example_keyspace
   tableName: example_table
+  username: username
+  password: password
   timeout: 10s
   batchSizeLimit: 1000
   batchByteSizeLimit: 10485760
@@ -27,11 +31,11 @@ cassandra:
   batchTickerDuration: 5s
   consistency: QUORUM
   collectionTableMapping:
-    - collection: example_collection
+    - collection: _default
       tableName: example_table
       fieldMappings:
         id: "id"
-        partition_key: "partitionId"
-        data: "documentData"
-        metadata: "meta"
-        status: "status"
+        name: "name"
+        email: "email"
+        created_at: "createdAt"
+        updated_at: "updatedAt"

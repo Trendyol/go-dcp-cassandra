@@ -33,7 +33,6 @@ func DefaultMapper(event couchbase.Event) []cassandra.Model {
 		model := buildDeleteModel(mapping, event)
 		return []cassandra.Model{&model}
 	}
-
 	return nil
 }
 
@@ -42,8 +41,19 @@ func findCollectionTableMapping(collectionName string) config.CollectionTableMap
 		return mapping
 	}
 
+	if collectionTableMappings == nil {
+		panic("collectionTableMappings is not initialized. Call SetCollectionTableMappings first.")
+	}
+
 	for _, mapping := range *collectionTableMappings {
 		if mapping.Collection == collectionName {
+			mappingCache[collectionName] = mapping
+			return mapping
+		}
+	}
+
+	for _, mapping := range *collectionTableMappings {
+		if mapping.Collection == "" || mapping.Collection == "_default" {
 			mappingCache[collectionName] = mapping
 			return mapping
 		}
@@ -117,6 +127,8 @@ func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Eve
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
 		if sourceField == "id" {
 			log.Printf("Skipping id mapping for column %s, will use rawModel.ID", cassandraColumn)
+		} else if sourceField == "documentData" {
+			targetDocument[cassandraColumn] = string(event.Value)
 		} else if fieldValue, exists := getNestedField(sourceDocument, sourceField); exists {
 			targetDocument[cassandraColumn] = convertFieldValue(sourceField, fieldValue)
 		} else {
