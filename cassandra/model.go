@@ -22,10 +22,10 @@ type Raw struct {
 }
 
 type ExecArgs struct {
-	Table     string
 	Document  map[string]interface{}
-	Operation OperationType
 	Filter    map[string]interface{}
+	Table     string
+	Operation OperationType
 }
 
 func (r *Raw) Convert() *ExecArgs {

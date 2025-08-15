@@ -1,4 +1,4 @@
-package metrics
+package metric
 
 import (
 	"go-dcp-cassandra/cassandra"

@@ -15,48 +15,40 @@ import (
 
 type Bulk struct {
 	session             Session
-	keyspace            string
+	jobCh               chan []BatchItem
 	dcpCheckpointCommit func()
 	batchTicker         *time.Ticker
-	batchSizeLimit      int
-	batchByteSizeLimit  int
-	batch               []BatchItem
-	batchKeys           map[string]int
-	batchIndex          int
-	batchSize           int
-	batchByteSize       int
-	flushLock           sync.Mutex
-	isDcpRebalancing    int32
-	workerCount         int
-	jobCh               chan []BatchItem
-	wg                  sync.WaitGroup
-	shutdownCh          chan struct{}
-	metric              *Metric
 	preparedStmts       map[string]string
-	preparedStmtsMutex  sync.RWMutex
-	useBatch            bool
+	batchKeys           map[string]int
+	metric              *Metric
+	shutdownCh          chan struct{}
+	keyspace            string
+	batch               []BatchItem
+	wg                  sync.WaitGroup
+	batchByteSizeLimit  int
+	workerCount         int
+	batchByteSize       int
+	batchSize           int
+	batchIndex          int
+	batchSizeLimit      int
 	batchType           BatchType
 	maxBatchSize        int
+	preparedStmtsMutex  sync.RWMutex
+	flushLock           sync.Mutex
+	isDcpRebalancing    int32
+	useBatch            bool
 }
 
 type BatchItem struct {
 	Model Model
-	Size  int
 	Ctx   *models.ListenerContext
 	Done  chan struct{}
-}
-
-type batchWithWait struct {
-	items []BatchItem
-	wg    *sync.WaitGroup
+	Size  int
 }
 
 type Mapper func(event interface{}) []Model
 
-type BulkBuilder struct {
-	mapper Mapper
-	config any
-}
+type BulkBuilder struct{}
 
 type Metric struct {
 	ProcessLatencyMs            int64
@@ -137,6 +129,7 @@ func (b *Bulk) worker() {
 	}
 }
 
+//nolint:funlen
 func (b *Bulk) processBatch(batch []BatchItem) {
 	var doneChannel chan struct{}
 	if len(batch) > 0 {
@@ -153,10 +146,8 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 				}
 			}
 			panic(r)
-		} else {
-			if doneChannel != nil {
-				close(doneChannel)
-			}
+		} else if doneChannel != nil {
+			close(doneChannel)
 		}
 	}()
 
@@ -450,6 +441,7 @@ func (b *Bulk) GetMetric() *Metric {
 	return b.metric
 }
 
+//nolint:funlen
 func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation string) string {
 	b.preparedStmtsMutex.RLock()
 	if query, exists := b.preparedStmts[cacheKey]; exists {
@@ -537,6 +529,7 @@ func getBatchType(batchTypeStr string) BatchType {
 	}
 }
 
+//nolint:funlen
 func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 	if len(items) == 0 {
 		return nil

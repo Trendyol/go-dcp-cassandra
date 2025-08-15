@@ -6,32 +6,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-type dummyGocqlQuery struct {
-	execCalled bool
-}
-
-func (q *dummyGocqlQuery) Exec() error {
-	q.execCalled = true
-	return nil
-}
-
-type dummyGocqlSession struct {
-	queryCalled bool
-}
-
-func (s *dummyGocqlSession) Query(stmt string, args ...interface{}) *dummyGocqlQuery {
-	s.queryCalled = true
-	return &dummyGocqlQuery{}
-}
-
-func (s *dummyGocqlSession) Close() {}
-
 type enhancedMockSession struct {
+	queries                []string
+	preparedQueries        []string
 	queryCallCount         int
 	preparedQueryCallCount int
 	newBatchCallCount      int
-	queries                []string
-	preparedQueries        []string
 }
 
 func (m *enhancedMockSession) Query(stmt string, values ...interface{}) Query {
@@ -63,8 +43,8 @@ func (m *enhancedMockQuery) Exec() error {
 }
 
 type enhancedMockBatch struct {
-	batchType BatchType
 	queries   []string
+	batchType BatchType
 	size      int
 }
 

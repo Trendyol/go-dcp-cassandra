@@ -7,6 +7,7 @@ import (
 	config "go-dcp-cassandra/configs"
 	connectorpkg "go-dcp-cassandra/connector"
 	"go-dcp-cassandra/couchbase"
+	"go-dcp-cassandra/metric"
 	"os"
 	"os/signal"
 	"syscall"
@@ -91,7 +92,16 @@ func newConnector(cf any, mapper Mapper) (Connector, error) {
 	}
 	conn.dcp = dcpClient
 
+	conn.dcp.SetEventHandler(
+		&DcpEventHandler{
+			isFinite: cfg.Dcp.IsDcpModeFinite(),
+			bulk:     conn.bulk,
+		})
+
 	connectorpkg.SetCollectionTableMappings(&cfg.Cassandra.CollectionTableMapping)
+
+	metricCollector := metric.NewMetricCollector(conn.bulk)
+	dcpClient.SetMetricCollectors(metricCollector)
 
 	return conn, nil
 }
@@ -104,7 +114,7 @@ func NewConnectorBuilder(config any) ConnectorBuilder {
 }
 
 func SimpleDefaultMapper(event couchbase.Event) []cassandra.Model {
-	var raw = cassandra.Raw{
+	raw := cassandra.Raw{
 		Table: "example_table",
 		Document: map[string]interface{}{
 			"id":   string(event.Key),

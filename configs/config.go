@@ -8,55 +8,54 @@ import (
 )
 
 type CollectionTableMapping struct {
+	FieldMappings map[string]string `yaml:"fieldMappings"`
 	Collection    string            `yaml:"collection"`
 	TableName     string            `yaml:"tableName"`
-	FieldMappings map[string]string `yaml:"fieldMappings"`
 }
 
 type Cassandra struct {
-	Hosts                  []string                 `yaml:"hosts"`
-	Username               string                   `yaml:"username"`
-	Password               string                   `yaml:"password"`
-	Keyspace               string                   `yaml:"keyspace"`
-	Timeout                time.Duration            `yaml:"timeout"`
-	BatchSize              int                      `yaml:"batchSize"`
-	BatchTimeout           time.Duration            `yaml:"batchTimeout"`
-	BatchSizeLimit         int                      `yaml:"batchSizeLimit"`
-	BatchTickerDuration    time.Duration            `yaml:"batchTickerDuration"`
-	BatchByteSizeLimit     int                      `yaml:"batchByteSizeLimit"`
-	WorkerCount            int                      `yaml:"workerCount"`
-	TableName              string                   `yaml:"tableName"`
+	Username          string `yaml:"username"`
+	Password          string `yaml:"password"`
+	Keyspace          string `yaml:"keyspace"`
+	Compressor        string `yaml:"compressor"`
+	SerialConsistency string `yaml:"serialConsistency"`
+	BatchType         string `yaml:"batchType"`
+	Consistency       string `yaml:"consistency"`
+	TableName         string `yaml:"tableName"`
+	SSL               struct {
+		CertPath           string `yaml:"certPath"`
+		KeyPath            string `yaml:"keyPath"`
+		CaPath             string `yaml:"caPath"`
+		Enable             bool   `yaml:"enable"`
+		InsecureSkipVerify bool   `yaml:"insecureSkipVerify"`
+	} `yaml:"ssl"`
 	CollectionTableMapping []CollectionTableMapping `yaml:"collectionTableMapping,omitempty"`
-	Consistency            string                   `yaml:"consistency"`
-	BatchType              string                   `yaml:"batchType"`
-	UseBatch               bool                     `yaml:"useBatch"`
-	MaxBatchSize           int                      `yaml:"maxBatchSize"`
-	NumConns               int                      `yaml:"numConns"`
-	ConnectTimeout         time.Duration            `yaml:"connectTimeout"`
-	KeepAlive              time.Duration            `yaml:"keepAlive"`
-	MaxPreparedStmts       int                      `yaml:"maxPreparedStmts"`
-	MaxRoutingKeyInfo      int                      `yaml:"maxRoutingKeyInfo"`
-	PageSize               int                      `yaml:"pageSize"`
-	SerialConsistency      string                   `yaml:"serialConsistency"`
+	Hosts                  []string                 `yaml:"hosts"`
 	RetryPolicy            struct {
 		NumRetries    int           `yaml:"numRetries"`
 		MinRetryDelay time.Duration `yaml:"minRetryDelay"`
 		MaxRetryDelay time.Duration `yaml:"maxRetryDelay"`
 	} `yaml:"retryPolicy"`
-	Compressor string `yaml:"compressor"`
-	SSL        struct {
-		Enable             bool   `yaml:"enable"`
-		CertPath           string `yaml:"certPath"`
-		KeyPath            string `yaml:"keyPath"`
-		CaPath             string `yaml:"caPath"`
-		InsecureSkipVerify bool   `yaml:"insecureSkipVerify"`
-	} `yaml:"ssl"`
+	BatchTimeout        time.Duration `yaml:"batchTimeout"`
+	KeepAlive           time.Duration `yaml:"keepAlive"`
+	BatchByteSizeLimit  int           `yaml:"batchByteSizeLimit"`
+	Timeout             time.Duration `yaml:"timeout"`
+	MaxBatchSize        int           `yaml:"maxBatchSize"`
+	NumConns            int           `yaml:"numConns"`
+	ConnectTimeout      time.Duration `yaml:"connectTimeout"`
+	WorkerCount         int           `yaml:"workerCount"`
+	MaxPreparedStmts    int           `yaml:"maxPreparedStmts"`
+	MaxRoutingKeyInfo   int           `yaml:"maxRoutingKeyInfo"`
+	PageSize            int           `yaml:"pageSize"`
+	BatchTickerDuration time.Duration `yaml:"batchTickerDuration"`
+	BatchSizeLimit      int           `yaml:"batchSizeLimit"`
+	BatchSize           int           `yaml:"batchSize"`
+	UseBatch            bool          `yaml:"useBatch"`
 }
 
 type Connector struct {
-	Cassandra Cassandra  `yaml:"cassandra" mapstructure:"cassandra"`
 	Dcp       config.Dcp `yaml:",inline" mapstructure:",squash"`
-	AppPort   string     `yaml:"appPort"`
+	Cassandra Cassandra  `yaml:"cassandra" mapstructure:"cassandra"`
 }
 
 func (c *Cassandra) setDefaults() {

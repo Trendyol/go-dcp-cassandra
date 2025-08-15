@@ -8,6 +8,7 @@ import (
 	"github.com/gocql/gocql"
 )
 
+//nolint:funlen
 func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 	cluster := gocql.NewCluster(cfg.Hosts...)
 	cluster.Keyspace = cfg.Keyspace

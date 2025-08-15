@@ -25,38 +25,24 @@ Otherwise, you can refer to the example provided below:
 package main
 
 import (
-	"log"
-	"go-dcp-cassandra/configs"
-	"go-dcp-cassandra/cassandra"
-	"go-dcp-cassandra/couchbase"
+  dcpcassandra "go-dcp-cassandra"
 )
 
-func mapper(event couchbase.Event) []cassandra.Model {
-	var raw = cassandra.Raw{
-		Table: "example_table",
-		Document: map[string]interface{}{
-			"id":   string(event.Key),
-			"data": string(event.Value),
-		},
-		Operation: cassandra.Upsert,
-		ID:        string(event.Key),
-	}
 
-	return []cassandra.Model{&raw}
+func CustomMapper(event couchbase.Event) []cassandra.Model {
+  //
 }
 
 func main() {
-	cfg := configs.NewAppConfig()
-	
-	connector, err := NewConnectorBuilder(&cfg).
-		SetMapper(mapper). // NOT NEEDED IF YOU'RE USING DEFAULT MAPPER. JUST CALL Build() FUNCTION
-		Build()
-	if err != nil {
-		log.Fatalf("Failed to build connector: %v", err)
-	}
+  connector, err := dcpcassandra.NewConnectorBuilder("config.yml").
+    SetMapper(CustomMapper). // NOT NEEDED IF YOU'RE USING DEFAULT MAPPER. JUST CALL Build() FUNCTION
+    Build()
+  if err != nil {
+    panic(err)
+  }
 
-	defer connector.Close()
-	connector.Start()
+  defer connector.Close()
+  connector.Start()
 }
 ```
 
@@ -73,15 +59,9 @@ logging:
 dcp:
   group:
     name: example_group
-    membership:
-      rebalanceDelay: 3s
 metadata:
   config:
     bucket: metadata
-    scope: example_scope
-    collection: example_collection
-  type: couchbase
-
 cassandra:
   hosts:
     - localhost:9042
@@ -100,8 +80,6 @@ cassandra:
         data: "documentData"         # Full JSON document → data column
         metadata: "meta"            # JSON field meta → metadata column
         status: "status"            # JSON field status → status column
-
-appPort: :9001
 ```
 
 ### Dcp Configuration

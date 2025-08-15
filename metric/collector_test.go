@@ -1,4 +1,4 @@
-package metrics
+package metric
 
 import (
 	"go-dcp-cassandra/cassandra"
@@ -81,7 +81,7 @@ func TestCollector_Integration(t *testing.T) {
 		metrics = append(metrics, metric)
 	}
 
-	assert.Len(t, metrics, 2, "Should have 2 metrics")
+	assert.Len(t, metrics, 2, "Should have 2 metric")
 }
 
 func TestNewMetricCollector_WithNilBulk(t *testing.T) {

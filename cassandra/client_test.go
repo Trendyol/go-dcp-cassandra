@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+//nolint:funlen
 func TestNewCassandraSession_ConsistencyLevels(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -3,12 +3,12 @@ package dcpcassandra
 import (
 	"encoding/json"
 	"fmt"
+	"go-dcp-cassandra/cassandra"
+	"go-dcp-cassandra/couchbase"
 	"strconv"
 	"strings"
 
-	"go-dcp-cassandra/cassandra"
 	config "go-dcp-cassandra/configs"
-	"go-dcp-cassandra/couchbase"
 )
 
 type Mapper func(event couchbase.Event) []cassandra.Model
@@ -142,7 +142,10 @@ func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Eve
 func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Event) cassandra.Raw {
 	var sourceDocument map[string]interface{}
 	if event.Value != nil {
-		json.Unmarshal(event.Value, &sourceDocument)
+		err := json.Unmarshal(event.Value, &sourceDocument)
+		if err != nil {
+			panic(err)
+		}
 	}
 	if sourceDocument == nil {
 		sourceDocument = make(map[string]interface{})

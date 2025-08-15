@@ -151,7 +151,10 @@ func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Eve
 func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Event) cassandra.Raw {
 	var sourceDocument map[string]interface{}
 	if event.Value != nil {
-		json.Unmarshal(event.Value, &sourceDocument)
+		err := json.Unmarshal(event.Value, &sourceDocument)
+		if err != nil {
+			panic(err)
+		}
 	}
 	if sourceDocument == nil {
 		sourceDocument = make(map[string]interface{})

@@ -1,12 +1,12 @@
 package connector
 
 import (
+	"go-dcp-cassandra/cassandra"
+	"go-dcp-cassandra/couchbase"
 	"testing"
 	"time"
 
-	"go-dcp-cassandra/cassandra"
 	config "go-dcp-cassandra/configs"
-	"go-dcp-cassandra/couchbase"
 
 	"github.com/stretchr/testify/assert"
 )
