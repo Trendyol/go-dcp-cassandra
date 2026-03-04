@@ -2,13 +2,14 @@ package cassandra
 
 import (
 	"fmt"
-	config "go-dcp-cassandra/configs"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Trendyol/go-dcp/models"
 	"github.com/stretchr/testify/assert"
+
+	config "github.com/Trendyol/go-dcp-cassandra/configs"
 )
 
 func TestBulkOperations(t *testing.T) {

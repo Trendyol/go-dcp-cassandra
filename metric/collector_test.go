@@ -1,11 +1,12 @@
 package metric
 
 import (
-	"go-dcp-cassandra/cassandra"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/Trendyol/go-dcp-cassandra/cassandra"
 )
 
 func TestNewMetricCollector(t *testing.T) {

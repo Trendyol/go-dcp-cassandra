@@ -2,10 +2,11 @@ package cassandra
 
 import (
 	"crypto/tls"
-	config "go-dcp-cassandra/configs"
 	"log"
 
 	"github.com/gocql/gocql"
+
+	config "github.com/Trendyol/go-dcp-cassandra/configs"
 )
 
 //nolint:funlen

@@ -3,11 +3,6 @@ package dcpcassandra
 import (
 	"context"
 	"errors"
-	"go-dcp-cassandra/cassandra"
-	config "go-dcp-cassandra/configs"
-	connectorpkg "go-dcp-cassandra/connector"
-	"go-dcp-cassandra/couchbase"
-	"go-dcp-cassandra/metric"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +10,12 @@ import (
 	"github.com/Trendyol/go-dcp"
 	"github.com/Trendyol/go-dcp/models"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Trendyol/go-dcp-cassandra/cassandra"
+	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	connectorpkg "github.com/Trendyol/go-dcp-cassandra/connector"
+	"github.com/Trendyol/go-dcp-cassandra/couchbase"
+	"github.com/Trendyol/go-dcp-cassandra/metric"
 )
 
 type Connector interface {

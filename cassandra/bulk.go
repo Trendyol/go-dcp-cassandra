@@ -2,7 +2,6 @@ package cassandra
 
 import (
 	"fmt"
-	config "go-dcp-cassandra/configs"
 	"log"
 	"sort"
 	"strings"
@@ -11,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Trendyol/go-dcp/models"
+
+	config "github.com/Trendyol/go-dcp-cassandra/configs"
 )
 
 type Bulk struct {

@@ -1,11 +1,12 @@
 package cassandra
 
 import (
-	config "go-dcp-cassandra/configs"
 	"testing"
 
 	"github.com/gocql/gocql"
 	"github.com/stretchr/testify/assert"
+
+	config "github.com/Trendyol/go-dcp-cassandra/configs"
 )
 
 //nolint:funlen

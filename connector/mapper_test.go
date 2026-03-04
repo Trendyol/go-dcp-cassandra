@@ -1,14 +1,14 @@
 package connector
 
 import (
-	"go-dcp-cassandra/cassandra"
-	"go-dcp-cassandra/couchbase"
 	"testing"
 	"time"
 
-	config "go-dcp-cassandra/configs"
-
 	"github.com/stretchr/testify/assert"
+
+	"github.com/Trendyol/go-dcp-cassandra/cassandra"
+	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/couchbase"
 )
 
 func TestDefaultMapper_Mutation(t *testing.T) {

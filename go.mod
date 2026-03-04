@@ -1,4 +1,4 @@
-module go-dcp-cassandra
+module github.com/Trendyol/go-dcp-cassandra
 
 go 1.24.5
 
