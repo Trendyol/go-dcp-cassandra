@@ -1,7 +1,7 @@
 package main
 
 import (
-	dcpcassandra "go-dcp-cassandra"
+	dcpcassandra "github.com/Trendyol/go-dcp-cassandra"
 )
 
 func main() {

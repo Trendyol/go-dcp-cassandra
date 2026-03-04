@@ -1,7 +1,7 @@
 package metric
 
 import (
-	"go-dcp-cassandra/cassandra"
+	"github.com/Trendyol/go-dcp-cassandra/cassandra"
 
 	"github.com/Trendyol/go-dcp/helpers"
 	"github.com/prometheus/client_golang/prometheus"

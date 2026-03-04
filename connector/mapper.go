@@ -3,12 +3,13 @@ package connector
 import (
 	"encoding/json"
 	"fmt"
-	"go-dcp-cassandra/cassandra"
-	config "go-dcp-cassandra/configs"
-	"go-dcp-cassandra/couchbase"
 	"log"
 	"strconv"
 	"strings"
+
+	"github.com/Trendyol/go-dcp-cassandra/cassandra"
+	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/couchbase"
 )
 
 type Mapper func(event couchbase.Event) []cassandra.Model

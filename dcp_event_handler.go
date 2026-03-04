@@ -1,7 +1,7 @@
 package dcpcassandra
 
 import (
-	"go-dcp-cassandra/cassandra"
+	"github.com/Trendyol/go-dcp-cassandra/cassandra"
 )
 
 type DcpEventHandler struct {

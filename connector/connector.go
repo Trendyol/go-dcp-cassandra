@@ -2,15 +2,16 @@ package connector
 
 import (
 	"context"
-	"go-dcp-cassandra/cassandra"
-	config "go-dcp-cassandra/configs"
-	"go-dcp-cassandra/couchbase"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/Trendyol/go-dcp"
 	"github.com/Trendyol/go-dcp/models"
+
+	"github.com/Trendyol/go-dcp-cassandra/cassandra"
+	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/couchbase"
 )
 
 type Connector interface {
