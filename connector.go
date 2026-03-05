@@ -118,11 +118,10 @@ func SimpleDefaultMapper(event couchbase.Event) []cassandra.Model {
 	raw := cassandra.Raw{
 		Table: "example_table",
 		Document: map[string]interface{}{
-			"id":   string(event.Key),
+			"key":  string(event.Key),
 			"data": string(event.Value),
 		},
 		Operation: cassandra.Upsert,
-		ID:        string(event.Key),
 	}
 
 	return []cassandra.Model{&raw}

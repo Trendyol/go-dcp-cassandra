@@ -98,48 +98,60 @@ func TestNewBulk_InvalidSession(t *testing.T) {
 	}
 }
 
-func TestInsert_PrimaryKeyMissing(t *testing.T) {
-	cfg := &config.Connector{
-		Cassandra: config.Cassandra{
-			Hosts:    []string{"127.0.0.1"},
-			Keyspace: "test_keyspace",
-			Username: "cassandra",
-			Password: "cassandra",
-			Timeout:  5 * time.Second,
-		},
-	}
-	bulk, _ := NewBulk(cfg, func() {})
+func TestGetActionKey(t *testing.T) {
+	bulk := &Bulk{}
+
+	t.Run("insert uses document fields", func(t *testing.T) {
+		raw := &Raw{
+			Table:     "test",
+			Document:  map[string]interface{}{"id": "abc", "name": "x"},
+			Operation: Insert,
+		}
+		key := bulk.getActionKey(raw)
+		assert.Equal(t, "test:id=abc;name=x;", key)
+	})
+
+	t.Run("update uses filter fields", func(t *testing.T) {
+		raw := &Raw{
+			Table:     "test",
+			Document:  map[string]interface{}{"name": "x"},
+			Filter:    map[string]interface{}{"product_id": 1, "culture": "tr"},
+			Operation: Update,
+		}
+		key := bulk.getActionKey(raw)
+		assert.Equal(t, "test:culture=tr;product_id=1;", key)
+	})
+
+	t.Run("delete uses filter fields", func(t *testing.T) {
+		raw := &Raw{
+			Table:     "test",
+			Filter:    map[string]interface{}{"product_id": 1},
+			Operation: Delete,
+		}
+		key := bulk.getActionKey(raw)
+		assert.Equal(t, "test:product_id=1;", key)
+	})
+
+	t.Run("empty source falls back to batch index", func(t *testing.T) {
+		raw := &Raw{
+			Table:     "test",
+			Operation: Insert,
+		}
+		key := bulk.getActionKey(raw)
+		assert.Equal(t, "batch:0", key)
+	})
+}
+
+func TestBulk_Insert_NilSession(t *testing.T) {
+	bulk := &Bulk{}
 	raw := &Raw{
-		Table:     "test_table",
-		Document:  map[string]interface{}{},
+		Table:     "tbl",
+		Document:  map[string]interface{}{"product_id": 1},
 		Operation: Insert,
 	}
 	err := bulk.insert(raw)
-	if err == nil {
-		t.Error("Expected error for missing primary key")
-	}
-}
-
-func TestGetActionKey(t *testing.T) {
-	bulk := &Bulk{}
-	raw := &Raw{
-		Table:    "test",
-		Document: map[string]interface{}{"id": "abc"},
-	}
-	key := bulk.getActionKey(raw)
-	expected := "test:id=abc;"
-	if key != expected {
-		t.Errorf("Expected %s, got %s", expected, key)
-	}
-}
-
-func TestGetPrimaryKeyFields(t *testing.T) {
-	bulk := &Bulk{}
-	raw := &Raw{}
-	keys := bulk.getPrimaryKeyFields(raw)
-	if len(keys) != 1 || keys[0] != "id" {
-		t.Errorf("Expected [id], got %v", keys)
-	}
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "session is nil")
 }
 
 func TestJoin(t *testing.T) {
@@ -272,31 +284,27 @@ func TestBulk_AddActions_DcpRebalancing(t *testing.T) {
 	}
 }
 
-func TestBulk_InsertUpdateDelete_Errors(t *testing.T) {
+func TestBulk_InsertUpdateDelete_Success(t *testing.T) {
 	bulk := &Bulk{
 		session:            &mockSession{},
 		keyspace:           "ks",
 		preparedStmts:      make(map[string]string),
 		preparedStmtsMutex: sync.RWMutex{},
 	}
+
 	raw := &Raw{
 		Table:     "tbl",
-		Document:  map[string]interface{}{},
-		Filter:    map[string]interface{}{"id": "1"},
+		Document:  map[string]interface{}{"product_id": 1, "culture": "tr"},
 		Operation: Insert,
 	}
-	if err := bulk.insert(raw); err == nil {
-		t.Error("Expected error from insert (primary key missing)")
-	}
-	raw.Document = map[string]interface{}{"id": "1"}
+	assert.NoError(t, bulk.insert(raw))
+
 	raw.Operation = Update
-	if err := bulk.update(raw); err != nil {
-		t.Errorf("Expected update to succeed, got error: %v", err)
-	}
+	raw.Filter = map[string]interface{}{"product_id": 1}
+	assert.NoError(t, bulk.update(raw))
+
 	raw.Operation = Delete
-	if err := bulk.delete(raw); err != nil {
-		t.Errorf("Expected delete to succeed, got error: %v", err)
-	}
+	assert.NoError(t, bulk.delete(raw))
 }
 
 func TestBulk_FlushMessages_ResetsBatch(t *testing.T) {

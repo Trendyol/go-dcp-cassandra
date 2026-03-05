@@ -172,20 +172,6 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 			}
 
 			var err error
-			docID := ""
-			if rawModel.Document != nil {
-				if id, ok := rawModel.Document["id"]; ok {
-					if strID, ok := id.(string); ok {
-						docID = strID
-					}
-				}
-			} else if rawModel.Filter != nil {
-				if id, ok := rawModel.Filter["id"]; ok {
-					if strID, ok := id.(string); ok {
-						docID = strID
-					}
-				}
-			}
 
 			switch rawModel.Operation {
 			case Insert, Upsert:
@@ -196,7 +182,7 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 				err = b.delete(rawModel)
 			}
 			if err != nil {
-				panic(fmt.Sprintf("Cassandra write failed for doc id %s: %v", docID, err))
+				panic(fmt.Sprintf("Cassandra %s failed on table %s: %v", rawModel.Operation, rawModel.Table, err))
 			}
 
 			if item.Ctx != nil && item.Ctx.Ack != nil {
@@ -305,12 +291,6 @@ func (b *Bulk) flushMessagesLocked() {
 }
 
 func (b *Bulk) insert(raw *Raw) error {
-	pkFields := b.getPrimaryKeyFields(raw)
-	for _, field := range pkFields {
-		if _, ok := raw.Document[field]; !ok {
-			return fmt.Errorf("primary key field '%s' is required for idempotency", field)
-		}
-	}
 	if b.session == nil {
 		return fmt.Errorf("cassandra session is nil")
 	}
@@ -391,23 +371,34 @@ func (b *Bulk) delete(raw *Raw) error {
 }
 
 func (b *Bulk) getActionKey(model Model) string {
-	if rawModel, ok := model.(*Raw); ok && rawModel.Document != nil {
-		pkFields := b.getPrimaryKeyFields(rawModel)
-		key := rawModel.Table + ":"
-		for _, field := range pkFields {
-			if val, ok := rawModel.Document[field]; ok {
-				key += fmt.Sprintf("%s=%v;", field, val)
-			}
-		}
-		if key != rawModel.Table+":" {
-			return key
-		}
+	rawModel, ok := model.(*Raw)
+	if !ok {
+		return fmt.Sprintf("batch:%d", b.batchIndex)
 	}
-	return fmt.Sprintf("batch:%d", b.batchIndex)
-}
 
-func (b *Bulk) getPrimaryKeyFields(raw *Raw) []string {
-	return []string{"id"}
+	var source map[string]interface{}
+	switch rawModel.Operation {
+	case Update, Delete:
+		source = rawModel.Filter
+	case Insert, Upsert:
+		source = rawModel.Document
+	}
+
+	if len(source) == 0 {
+		return fmt.Sprintf("batch:%d", b.batchIndex)
+	}
+
+	keys := make([]string, 0, len(source))
+	for k := range source {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	key := rawModel.Table + ":"
+	for _, k := range keys {
+		key += fmt.Sprintf("%s=%v;", k, source[k])
+	}
+	return key
 }
 
 func join(arr []string, sep string) string {

@@ -17,8 +17,8 @@ func TestDefaultMapper_Mutation(t *testing.T) {
 			Collection: "test_collection",
 			TableName:  "example_table",
 			FieldMappings: map[string]string{
-				"id":   "id",
-				"data": "documentData", // Special field that gets the full JSON
+				"id":   "_key",
+				"data": "documentData",
 			},
 		},
 	}
@@ -36,15 +36,15 @@ func TestDefaultMapper_Mutation(t *testing.T) {
 
 	result := DefaultMapper(event)
 
-	assert.Len(t, result, 1, "Expected 1 model")
+	assert.Len(t, result, 1)
 
 	rawModel, ok := result[0].(*cassandra.Raw)
-	assert.True(t, ok, "Expected *cassandra.Raw model")
+	assert.True(t, ok)
 
-	assert.Equal(t, "example_table", rawModel.Table, "Expected table 'example_table'")
-	assert.Equal(t, cassandra.Upsert, rawModel.Operation, "Expected operation Upsert")
-	assert.Equal(t, "doc_key", rawModel.Document["id"], "Expected id 'doc_key'")
-	assert.Equal(t, jsonData, rawModel.Document["data"], "Expected data to match input")
+	assert.Equal(t, "example_table", rawModel.Table)
+	assert.Equal(t, cassandra.Upsert, rawModel.Operation)
+	assert.Equal(t, "doc_key", rawModel.Document["id"])
+	assert.Equal(t, jsonData, rawModel.Document["data"])
 }
 
 func TestDefaultMapper_Deletion(t *testing.T) {
@@ -53,7 +53,7 @@ func TestDefaultMapper_Deletion(t *testing.T) {
 			Collection: "test_collection",
 			TableName:  "example_table",
 			FieldMappings: map[string]string{
-				"id":   "id",
+				"id":   "_key",
 				"data": "documentData",
 			},
 		},
@@ -72,14 +72,14 @@ func TestDefaultMapper_Deletion(t *testing.T) {
 
 	result := DefaultMapper(event)
 
-	assert.Len(t, result, 1, "Expected 1 model")
+	assert.Len(t, result, 1)
 
 	rawModel, ok := result[0].(*cassandra.Raw)
-	assert.True(t, ok, "Expected *cassandra.Raw model")
+	assert.True(t, ok)
 
-	assert.Equal(t, "example_table", rawModel.Table, "Expected table 'example_table'")
-	assert.Equal(t, cassandra.Delete, rawModel.Operation, "Expected operation Delete")
-	assert.Equal(t, "doc_key", rawModel.Filter["id"], "Expected id 'doc_key' in filter")
+	assert.Equal(t, "example_table", rawModel.Table)
+	assert.Equal(t, cassandra.Delete, rawModel.Operation)
+	assert.Equal(t, "doc_key", rawModel.Filter["id"])
 }
 
 func TestDefaultMapper_Expiration(t *testing.T) {
@@ -88,7 +88,7 @@ func TestDefaultMapper_Expiration(t *testing.T) {
 			Collection: "test_collection",
 			TableName:  "example_table",
 			FieldMappings: map[string]string{
-				"id":   "id",
+				"id":   "_key",
 				"data": "documentData",
 			},
 		},
@@ -106,14 +106,14 @@ func TestDefaultMapper_Expiration(t *testing.T) {
 
 	result := DefaultMapper(event)
 
-	assert.Len(t, result, 1, "Expected 1 model")
+	assert.Len(t, result, 1)
 
 	rawModel, ok := result[0].(*cassandra.Raw)
-	assert.True(t, ok, "Expected *cassandra.Raw model")
+	assert.True(t, ok)
 
-	assert.Equal(t, "example_table", rawModel.Table, "Expected table 'example_table'")
-	assert.Equal(t, cassandra.Delete, rawModel.Operation, "Expected operation Delete")
-	assert.Equal(t, "doc_key", rawModel.Filter["id"], "Expected id 'doc_key' in filter")
+	assert.Equal(t, "example_table", rawModel.Table)
+	assert.Equal(t, cassandra.Delete, rawModel.Operation)
+	assert.Equal(t, "doc_key", rawModel.Filter["id"])
 }
 
 func TestDefaultMapper_UnknownEvent(t *testing.T) {
@@ -122,7 +122,7 @@ func TestDefaultMapper_UnknownEvent(t *testing.T) {
 			Collection: "test_collection",
 			TableName:  "example_table",
 			FieldMappings: map[string]string{
-				"id":   "id",
+				"id":   "_key",
 				"data": "documentData",
 			},
 		},
