@@ -3,7 +3,6 @@ package connector
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
@@ -117,35 +116,30 @@ func convertFieldValue(fieldPath string, value interface{}) interface{} {
 func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Event) cassandra.Raw {
 	var sourceDocument map[string]interface{}
 	if err := json.Unmarshal(event.Value, &sourceDocument); err != nil {
-		log.Printf("JSON unmarshal error for doc %s: %v", string(event.Key), err)
 		sourceDocument = make(map[string]interface{})
 	}
-
-	log.Printf("Processing doc %s with mappings: %+v", string(event.Key), mapping.FieldMappings)
 
 	targetDocument := make(map[string]interface{})
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
-		if sourceField == "id" {
-			log.Printf("Skipping id mapping for column %s, will use rawModel.ID", cassandraColumn)
-		} else if sourceField == "documentData" {
+		switch sourceField {
+		case "_key":
+			targetDocument[cassandraColumn] = string(event.Key)
+		case "documentData":
 			targetDocument[cassandraColumn] = string(event.Value)
-		} else if fieldValue, exists := getNestedField(sourceDocument, sourceField); exists {
-			targetDocument[cassandraColumn] = convertFieldValue(sourceField, fieldValue)
-		} else {
-			targetDocument[cassandraColumn] = nil
+		default:
+			if fieldValue, exists := getNestedField(sourceDocument, sourceField); exists {
+				targetDocument[cassandraColumn] = convertFieldValue(sourceField, fieldValue)
+			} else {
+				targetDocument[cassandraColumn] = nil
+			}
 		}
 	}
-
-	targetDocument["id"] = string(event.Key)
-
-	log.Printf("Final targetDocument for doc %s: %+v", string(event.Key), targetDocument)
 
 	return cassandra.Raw{
 		Table:     mapping.TableName,
 		Document:  targetDocument,
 		Operation: cassandra.Upsert,
-		ID:        string(event.Key),
 	}
 }
 
@@ -164,18 +158,20 @@ func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Eve
 	filter := make(map[string]interface{})
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
-		if sourceField == "id" {
-		} else if fieldValue, exists := getNestedField(sourceDocument, sourceField); exists {
-			filter[cassandraColumn] = convertFieldValue(sourceField, fieldValue)
+		switch sourceField {
+		case "_key":
+			filter[cassandraColumn] = string(event.Key)
+		case "documentData":
+		default:
+			if fieldValue, exists := getNestedField(sourceDocument, sourceField); exists {
+				filter[cassandraColumn] = convertFieldValue(sourceField, fieldValue)
+			}
 		}
 	}
-
-	filter["id"] = string(event.Key)
 
 	return cassandra.Raw{
 		Table:     mapping.TableName,
 		Filter:    filter,
 		Operation: cassandra.Delete,
-		ID:        string(event.Key),
 	}
 }
