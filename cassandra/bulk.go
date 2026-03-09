@@ -42,7 +42,6 @@ type Bulk struct {
 
 type BatchItem struct {
 	Model Model
-	Ctx   *models.ListenerContext
 	Done  chan struct{}
 	Size  int
 }
@@ -54,6 +53,8 @@ type BulkBuilder struct{}
 type Metric struct {
 	ProcessLatencyMs            int64
 	BulkRequestProcessLatencyMs int64
+	BulkRequestSize             int64
+	BulkRequestByteSize         int64
 }
 
 func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
@@ -61,10 +62,7 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 	if err != nil {
 		return nil, err
 	}
-	workerCount := cfg.Cassandra.WorkerCount
-	if workerCount <= 0 {
-		workerCount = 1
-	}
+	workerCount := 1
 	batchSizeLimit := cfg.Cassandra.BatchSizeLimit
 	if batchSizeLimit <= 0 {
 		batchSizeLimit = 1000
@@ -75,9 +73,6 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 	}
 
 	channelBufferSize := workerCount
-	if channelBufferSize > 10 {
-		channelBufferSize = 10
-	}
 
 	b := &Bulk{
 		session:             realSession,
@@ -130,6 +125,33 @@ func (b *Bulk) worker() {
 	}
 }
 
+func (b *Bulk) request(item BatchItem, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	if item.Model == nil {
+		return
+	}
+
+	rawModel, ok := item.Model.(*Raw)
+	if !ok {
+		return
+	}
+
+	var err error
+
+	switch rawModel.Operation {
+	case Insert, Upsert:
+		err = b.insert(rawModel)
+	case Update:
+		err = b.update(rawModel)
+	case Delete:
+		err = b.delete(rawModel)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("Cassandra %s failed on table %s: %v", rawModel.Operation, rawModel.Table, err))
+	}
+}
+
 //nolint:funlen
 func (b *Bulk) processBatch(batch []BatchItem) {
 	var doneChannel chan struct{}
@@ -161,36 +183,18 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 			panic(fmt.Sprintf("Cassandra batch write failed: %v", err))
 		}
 	} else {
+		var wg sync.WaitGroup
+		wg.Add(len(batch))
+
 		for _, item := range batch {
-			if item.Model == nil {
-				continue
-			}
-
-			rawModel, ok := item.Model.(*Raw)
-			if !ok {
-				continue
-			}
-
-			var err error
-
-			switch rawModel.Operation {
-			case Insert, Upsert:
-				err = b.insert(rawModel)
-			case Update:
-				err = b.update(rawModel)
-			case Delete:
-				err = b.delete(rawModel)
-			}
-			if err != nil {
-				panic(fmt.Sprintf("Cassandra %s failed on table %s: %v", rawModel.Operation, rawModel.Table, err))
-			}
-
-			if item.Ctx != nil && item.Ctx.Ack != nil {
-				item.Ctx.Ack()
-			}
+			go b.request(item, &wg)
 		}
+
+		wg.Wait()
 	}
 
+	b.metric.BulkRequestSize = int64(b.batchSize)
+	b.metric.BulkRequestByteSize = int64(b.batchByteSize)
 	b.metric.BulkRequestProcessLatencyMs = time.Since(startedTime).Milliseconds()
 }
 
@@ -242,13 +246,11 @@ func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, acti
 			b.batch[batchIndex] = BatchItem{
 				Model: action,
 				Size:  size,
-				Ctx:   ctx,
 			}
 		} else {
 			b.batch = append(b.batch, BatchItem{
 				Model: action,
 				Size:  size,
-				Ctx:   ctx,
 			})
 			b.batchKeys[key] = b.batchIndex
 			b.batchIndex++
@@ -256,6 +258,8 @@ func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, acti
 			b.batchByteSize += itemSize
 		}
 	}
+
+	ctx.Ack()
 
 	if b.batchSize >= b.batchSizeLimit || b.batchByteSize >= b.batchByteSizeLimit {
 		b.flushMessagesLocked()
@@ -616,12 +620,6 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 	if batch.Size() > 0 {
 		if err := batch.ExecuteBatch(); err != nil {
 			return err
-		}
-	}
-
-	for _, item := range items {
-		if item.Ctx != nil && item.Ctx.Ack != nil {
-			item.Ctx.Ack()
 		}
 	}
 

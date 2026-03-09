@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Trendyol/go-dcp/models"
 	"github.com/stretchr/testify/assert"
 
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
@@ -227,7 +226,7 @@ func TestBulk_WorkerProcessesBatch(t *testing.T) {
 		Table:    "test_table",
 		Document: map[string]interface{}{"id": "1"},
 	}
-	batch := []BatchItem{{Model: raw, Size: 1, Ctx: nil}}
+	batch := []BatchItem{{Model: raw, Size: 1}}
 	bulk.wg.Add(1)
 	go bulk.worker()
 	bulk.jobCh <- batch
@@ -310,7 +309,7 @@ func TestBulk_InsertUpdateDelete_Success(t *testing.T) {
 func TestBulk_FlushMessages_ResetsBatch(t *testing.T) {
 	bulk := &Bulk{
 		session:             &mockSession{},
-		batch:               []BatchItem{{Model: &Raw{}, Ctx: nil}},
+		batch:               []BatchItem{{Model: &Raw{}}},
 		batchKeys:           map[string]int{"a": 0},
 		batchSizeLimit:      10,
 		dcpCheckpointCommit: func() {},
@@ -386,36 +385,12 @@ func TestBulk_ErrorHandling_Operations(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestBulk_AddActionsWithCtx(t *testing.T) {
-	bulk := &Bulk{
-		batch:               make([]BatchItem, 0, 10),
-		batchKeys:           make(map[string]int, 10),
-		batchSizeLimit:      10,
-		batchByteSizeLimit:  10485760,
-		dcpCheckpointCommit: func() {},
-		metric:              &Metric{},
-	}
-
-	mockCtx := &models.ListenerContext{}
-	raw := &Raw{
-		Table:    "test_table",
-		Document: map[string]interface{}{"id": "1"},
-	}
-
-	bulk.AddActions(mockCtx, time.Now(), []Model{raw})
-
-	assert.Len(t, bulk.batch, 1)
-	assert.Equal(t, mockCtx, bulk.batch[0].Ctx, "Ctx should be set in BatchItem")
-}
-
 func TestBulk_BatchItemCtxField(t *testing.T) {
 	item := BatchItem{
 		Model: &Raw{},
 		Size:  1,
-		Ctx:   &models.ListenerContext{},
 	}
 
-	assert.NotNil(t, item.Ctx, "Ctx field should not be nil")
 	assert.Equal(t, 1, item.Size, "Size should be 1")
 	assert.NotNil(t, item.Model, "Model should not be nil")
 }
@@ -465,7 +440,6 @@ func TestBulk_BatchMode_ProcessBatchWithBatch(t *testing.T) {
 				Document:  map[string]interface{}{"id": "1", "name": "test1"},
 				Operation: Insert,
 			},
-			Ctx: &models.ListenerContext{Ack: func() {}},
 		},
 		{
 			Model: &Raw{
@@ -474,7 +448,6 @@ func TestBulk_BatchMode_ProcessBatchWithBatch(t *testing.T) {
 				Filter:    map[string]interface{}{"id": "2"},
 				Operation: Update,
 			},
-			Ctx: &models.ListenerContext{Ack: func() {}},
 		},
 		{
 			Model: &Raw{
@@ -482,7 +455,6 @@ func TestBulk_BatchMode_ProcessBatchWithBatch(t *testing.T) {
 				Filter:    map[string]interface{}{"id": "3"},
 				Operation: Delete,
 			},
-			Ctx: &models.ListenerContext{Ack: func() {}},
 		},
 	}
 
@@ -511,7 +483,6 @@ func TestBulk_Worker_UseBatchMode(t *testing.T) {
 				Document:  map[string]interface{}{"id": "1", "name": "test"},
 				Operation: Insert,
 			},
-			Ctx: &models.ListenerContext{Ack: func() {}},
 		},
 	}
 
@@ -578,7 +549,7 @@ func TestBulk_NewBulk_WithBatchConfig(t *testing.T) {
 			UseBatch:            true,
 			BatchType:           "unlogged",
 			MaxBatchSize:        100,
-			WorkerCount:         2,
+			WorkerCount:         1,
 			BatchSizeLimit:      50,
 			BatchTickerDuration: 1 * time.Second,
 		},
@@ -647,7 +618,6 @@ func TestBulk_BatchErrorHandling_NoCouchbaseCommit(t *testing.T) {
 		{
 			Model: raw,
 			Size:  1,
-			Ctx:   nil,
 			Done:  done,
 		},
 	}

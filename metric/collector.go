@@ -12,6 +12,8 @@ type Collector struct {
 
 	processLatency            *prometheus.Desc
 	bulkRequestProcessLatency *prometheus.Desc
+	bulkRequestSize           *prometheus.Desc
+	bulkRequestByteSize       *prometheus.Desc
 }
 
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
@@ -34,6 +36,20 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		float64(bulkMetric.BulkRequestProcessLatencyMs),
 		[]string{}...,
 	)
+
+	ch <- prometheus.MustNewConstMetric(
+		c.bulkRequestSize,
+		prometheus.GaugeValue,
+		float64(bulkMetric.BulkRequestSize),
+		[]string{}...,
+	)
+
+	ch <- prometheus.MustNewConstMetric(
+		c.bulkRequestByteSize,
+		prometheus.GaugeValue,
+		float64(bulkMetric.BulkRequestByteSize),
+		[]string{}...,
+	)
 }
 
 func NewMetricCollector(bulk *cassandra.Bulk) *Collector {
@@ -50,6 +66,20 @@ func NewMetricCollector(bulk *cassandra.Bulk) *Collector {
 		bulkRequestProcessLatency: prometheus.NewDesc(
 			prometheus.BuildFQName(helpers.Name, "cassandra_connector_bulk_request_process_latency_ms", "current"),
 			"Cassandra connector bulk request process latency ms",
+			[]string{},
+			nil,
+		),
+
+		bulkRequestSize: prometheus.NewDesc(
+			prometheus.BuildFQName(helpers.Name, "cassandra_connector_bulk_request_size", "current"),
+			"Cassandra connector bulk request size",
+			[]string{},
+			nil,
+		),
+
+		bulkRequestByteSize: prometheus.NewDesc(
+			prometheus.BuildFQName(helpers.Name, "cassandra_connector_bulk_request_byte_size", "current"),
+			"Cassandra connector bulk request byte size",
 			[]string{},
 			nil,
 		),

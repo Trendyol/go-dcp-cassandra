@@ -32,7 +32,7 @@ func TestCollector_Describe(t *testing.T) {
 		descriptions = append(descriptions, desc)
 	}
 
-	assert.Len(t, descriptions, 2)
+	assert.Len(t, descriptions, 4)
 }
 
 func TestCollector_Collect(t *testing.T) {
@@ -48,7 +48,7 @@ func TestCollector_Collect(t *testing.T) {
 		metrics = append(metrics, metric)
 	}
 
-	assert.Len(t, metrics, 2)
+	assert.Len(t, metrics, 4)
 }
 
 func TestCollector_Unregister(t *testing.T) {
@@ -71,7 +71,7 @@ func TestCollector_Integration(t *testing.T) {
 		descriptions = append(descriptions, desc)
 	}
 
-	assert.Len(t, descriptions, 2, "Should have 2 metric descriptions")
+	assert.Len(t, descriptions, 4, "Should have 2 metric descriptions")
 
 	metricCh := make(chan prometheus.Metric, 10)
 	collector.Collect(metricCh)
@@ -82,7 +82,7 @@ func TestCollector_Integration(t *testing.T) {
 		metrics = append(metrics, metric)
 	}
 
-	assert.Len(t, metrics, 2, "Should have 2 metric")
+	assert.Len(t, metrics, 4, "Should have 4 metric")
 }
 
 func TestNewMetricCollector_WithNilBulk(t *testing.T) {
