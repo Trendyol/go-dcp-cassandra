@@ -299,19 +299,22 @@ func (b *Bulk) insert(raw *Raw) error {
 		return fmt.Errorf("cassandra session is nil")
 	}
 
-	cacheKey := fmt.Sprintf("INSERT:%s:%d", raw.Table, len(raw.Document))
+	hasTS := raw.Timestamp > 0
+	cacheKey := fmt.Sprintf("INSERT:%s:%d:%v", raw.Table, len(raw.Document), hasTS)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
 
-	// Sort columns to match the query preparation order
 	columns := make([]string, 0, len(raw.Document))
 	for k := range raw.Document {
 		columns = append(columns, k)
 	}
 	sort.Strings(columns)
 
-	values := make([]interface{}, 0, len(raw.Document))
+	values := make([]interface{}, 0, len(raw.Document)+1)
 	for _, column := range columns {
 		values = append(values, raw.Document[column])
+	}
+	if hasTS {
+		values = append(values, raw.Timestamp)
 	}
 
 	return b.session.PreparedQuery(query, values...).Exec()
@@ -322,10 +325,10 @@ func (b *Bulk) update(raw *Raw) error {
 		return fmt.Errorf("cassandra session is nil")
 	}
 
-	cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d", raw.Table, len(raw.Document), len(raw.Filter))
+	hasTS := raw.Timestamp > 0
+	cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d:%v", raw.Table, len(raw.Document), len(raw.Filter), hasTS)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "UPDATE")
 
-	// Sort columns to match the query preparation order
 	docColumns := make([]string, 0, len(raw.Document))
 	for k := range raw.Document {
 		docColumns = append(docColumns, k)
@@ -338,7 +341,11 @@ func (b *Bulk) update(raw *Raw) error {
 	}
 	sort.Strings(filterColumns)
 
-	values := make([]interface{}, 0, len(raw.Document)+len(raw.Filter))
+	values := make([]interface{}, 0, len(raw.Document)+len(raw.Filter)+1)
+
+	if hasTS {
+		values = append(values, raw.Timestamp)
+	}
 
 	for _, column := range docColumns {
 		values = append(values, raw.Document[column])
@@ -356,17 +363,22 @@ func (b *Bulk) delete(raw *Raw) error {
 		return fmt.Errorf("cassandra session is nil")
 	}
 
-	cacheKey := fmt.Sprintf("DELETE:%s:%d", raw.Table, len(raw.Filter))
+	hasTS := raw.Timestamp > 0
+	cacheKey := fmt.Sprintf("DELETE:%s:%d:%v", raw.Table, len(raw.Filter), hasTS)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "DELETE")
 
-	// Sort columns to match the query preparation order
 	filterColumns := make([]string, 0, len(raw.Filter))
 	for k := range raw.Filter {
 		filterColumns = append(filterColumns, k)
 	}
 	sort.Strings(filterColumns)
 
-	values := make([]interface{}, 0, len(raw.Filter))
+	values := make([]interface{}, 0, len(raw.Filter)+1)
+
+	if hasTS {
+		values = append(values, raw.Timestamp)
+	}
+
 	for _, column := range filterColumns {
 		values = append(values, raw.Filter[column])
 	}
@@ -381,11 +393,16 @@ func (b *Bulk) getActionKey(model Model) string {
 	}
 
 	var source map[string]interface{}
-	switch rawModel.Operation {
-	case Update, Delete:
-		source = rawModel.Filter
-	case Insert, Upsert:
-		source = rawModel.Document
+
+	if len(rawModel.RowKey) > 0 {
+		source = rawModel.RowKey
+	} else {
+		switch rawModel.Operation {
+		case Update, Delete:
+			source = rawModel.Filter
+		case Insert, Upsert:
+			source = rawModel.Document
+		}
 	}
 
 	if len(source) == 0 {
@@ -453,14 +470,15 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 		return query
 	}
 
+	hasTS := raw.Timestamp > 0
 	var query string
+
 	switch operation {
 	case "INSERT":
 		columns := make([]string, 0, len(raw.Document))
 		for k := range raw.Document {
 			columns = append(columns, k)
 		}
-		// Sort columns to ensure consistent ordering
 		sort.Strings(columns)
 
 		placeholders := make([]string, 0, len(raw.Document))
@@ -468,12 +486,14 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 			placeholders = append(placeholders, "?")
 		}
 		query = fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)", b.keyspace, raw.Table, join(columns, ","), join(placeholders, ","))
+		if hasTS {
+			query += " USING TIMESTAMP ?"
+		}
 	case "UPDATE":
 		docColumns := make([]string, 0, len(raw.Document))
 		for k := range raw.Document {
 			docColumns = append(docColumns, k)
 		}
-		// Sort columns to ensure consistent ordering
 		sort.Strings(docColumns)
 
 		setParts := make([]string, 0, len(raw.Document))
@@ -485,27 +505,35 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 		for k := range raw.Filter {
 			filterColumns = append(filterColumns, k)
 		}
-		// Sort filter columns to ensure consistent ordering
 		sort.Strings(filterColumns)
 
 		whereParts := make([]string, 0, len(raw.Filter))
 		for _, k := range filterColumns {
 			whereParts = append(whereParts, fmt.Sprintf("%s = ?", k))
 		}
-		query = fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s", b.keyspace, raw.Table, join(setParts, ","), join(whereParts, " AND "))
+
+		if hasTS {
+			query = fmt.Sprintf("UPDATE %s.%s USING TIMESTAMP ? SET %s WHERE %s", b.keyspace, raw.Table, join(setParts, ","), join(whereParts, " AND "))
+		} else {
+			query = fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s", b.keyspace, raw.Table, join(setParts, ","), join(whereParts, " AND "))
+		}
 	case "DELETE":
 		filterColumns := make([]string, 0, len(raw.Filter))
 		for k := range raw.Filter {
 			filterColumns = append(filterColumns, k)
 		}
-		// Sort filter columns to ensure consistent ordering
 		sort.Strings(filterColumns)
 
 		whereParts := make([]string, 0, len(raw.Filter))
 		for _, k := range filterColumns {
 			whereParts = append(whereParts, fmt.Sprintf("%s = ?", k))
 		}
-		query = fmt.Sprintf("DELETE FROM %s.%s WHERE %s", b.keyspace, raw.Table, join(whereParts, " AND "))
+
+		if hasTS {
+			query = fmt.Sprintf("DELETE FROM %s.%s USING TIMESTAMP ? WHERE %s", b.keyspace, raw.Table, join(whereParts, " AND "))
+		} else {
+			query = fmt.Sprintf("DELETE FROM %s.%s WHERE %s", b.keyspace, raw.Table, join(whereParts, " AND "))
+		}
 	}
 
 	b.preparedStmts[cacheKey] = query
@@ -525,7 +553,6 @@ func getBatchType(batchTypeStr string) BatchType {
 	}
 }
 
-//nolint:funlen
 func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 	if len(items) == 0 {
 		return nil
@@ -543,31 +570,33 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 			continue
 		}
 
+		hasTS := rawModel.Timestamp > 0
 		var query string
 		var values []interface{}
 
 		switch rawModel.Operation {
 		case Insert, Upsert:
-			cacheKey := fmt.Sprintf("INSERT:%s:%d", rawModel.Table, len(rawModel.Document))
+			cacheKey := fmt.Sprintf("INSERT:%s:%d:%v", rawModel.Table, len(rawModel.Document), hasTS)
 			query = b.getCachedPreparedStatement(cacheKey, rawModel, "INSERT")
 
-			// Sort columns to match the query preparation order
 			columns := make([]string, 0, len(rawModel.Document))
 			for k := range rawModel.Document {
 				columns = append(columns, k)
 			}
 			sort.Strings(columns)
 
-			values = make([]interface{}, 0, len(rawModel.Document))
+			values = make([]interface{}, 0, len(rawModel.Document)+1)
 			for _, column := range columns {
 				values = append(values, rawModel.Document[column])
 			}
+			if hasTS {
+				values = append(values, rawModel.Timestamp)
+			}
 
 		case Update:
-			cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d", rawModel.Table, len(rawModel.Document), len(rawModel.Filter))
+			cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d:%v", rawModel.Table, len(rawModel.Document), len(rawModel.Filter), hasTS)
 			query = b.getCachedPreparedStatement(cacheKey, rawModel, "UPDATE")
 
-			// Sort columns to match the query preparation order
 			docColumns := make([]string, 0, len(rawModel.Document))
 			for k := range rawModel.Document {
 				docColumns = append(docColumns, k)
@@ -580,7 +609,11 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 			}
 			sort.Strings(filterColumns)
 
-			values = make([]interface{}, 0, len(rawModel.Document)+len(rawModel.Filter))
+			values = make([]interface{}, 0, len(rawModel.Document)+len(rawModel.Filter)+1)
+
+			if hasTS {
+				values = append(values, rawModel.Timestamp)
+			}
 
 			for _, column := range docColumns {
 				values = append(values, rawModel.Document[column])
@@ -591,17 +624,21 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 			}
 
 		case Delete:
-			cacheKey := fmt.Sprintf("DELETE:%s:%d", rawModel.Table, len(rawModel.Filter))
+			cacheKey := fmt.Sprintf("DELETE:%s:%d:%v", rawModel.Table, len(rawModel.Filter), hasTS)
 			query = b.getCachedPreparedStatement(cacheKey, rawModel, "DELETE")
 
-			// Sort columns to match the query preparation order
 			filterColumns := make([]string, 0, len(rawModel.Filter))
 			for k := range rawModel.Filter {
 				filterColumns = append(filterColumns, k)
 			}
 			sort.Strings(filterColumns)
 
-			values = make([]interface{}, 0, len(rawModel.Filter))
+			values = make([]interface{}, 0, len(rawModel.Filter)+1)
+
+			if hasTS {
+				values = append(values, rawModel.Timestamp)
+			}
+
 			for _, column := range filterColumns {
 				values = append(values, rawModel.Filter[column])
 			}
