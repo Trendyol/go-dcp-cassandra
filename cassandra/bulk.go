@@ -25,6 +25,7 @@ type Bulk struct {
 	shutdownCh          chan struct{}
 	keyspace            string
 	batch               []BatchItem
+	contexts            []*models.ListenerContext
 	wg                  sync.WaitGroup
 	batchByteSizeLimit  int
 	workerCount         int
@@ -259,7 +260,7 @@ func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, acti
 		}
 	}
 
-	ctx.Ack()
+	b.contexts = append(b.contexts, ctx)
 
 	if b.batchSize >= b.batchSizeLimit || b.batchByteSize >= b.batchByteSizeLimit {
 		b.flushMessagesLocked()
@@ -276,22 +277,36 @@ func (b *Bulk) flushMessagesLocked() {
 	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
 		return
 	}
-	if len(b.batch) > 0 {
-		done := make(chan struct{})
-		batchCopy := make([]BatchItem, len(b.batch))
-		copy(batchCopy, b.batch)
-		for i := range batchCopy {
-			batchCopy[i].Done = done
+
+	contexts := b.contexts
+	b.contexts = nil
+
+	if len(b.batch) == 0 {
+		for _, ctx := range contexts {
+			ctx.Ack()
 		}
-		b.jobCh <- batchCopy
-		<-done
-		b.batch = b.batch[:0]
-		b.batchKeys = make(map[string]int, b.batchSizeLimit)
-		b.batchIndex = 0
-		b.batchSize = 0
-		b.batchByteSize = 0
-		b.dcpCheckpointCommit()
+		return
 	}
+
+	done := make(chan struct{})
+	batchCopy := make([]BatchItem, len(b.batch))
+	copy(batchCopy, b.batch)
+	for i := range batchCopy {
+		batchCopy[i].Done = done
+	}
+	b.jobCh <- batchCopy
+	<-done
+	b.batch = b.batch[:0]
+	b.batchKeys = make(map[string]int, b.batchSizeLimit)
+	b.batchIndex = 0
+	b.batchSize = 0
+	b.batchByteSize = 0
+
+	for _, ctx := range contexts {
+		ctx.Ack()
+	}
+
+	b.dcpCheckpointCommit()
 }
 
 func (b *Bulk) insert(raw *Raw) error {
