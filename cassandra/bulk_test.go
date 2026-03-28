@@ -777,6 +777,30 @@ func TestBulk_PreparedStatement_WithTimestamp(t *testing.T) {
 	assert.Contains(t, deleteQ, "USING TIMESTAMP ?")
 }
 
+func TestBulk_PreparedStatementCacheKey_UsesColumnNames(t *testing.T) {
+	insertA := buildInsertCacheKey("tbl", map[string]interface{}{"id": 1, "name": "a"}, false)
+	insertB := buildInsertCacheKey("tbl", map[string]interface{}{"id": 1, "title": "a"}, false)
+	assert.NotEqual(t, insertA, insertB)
+
+	updateA := buildUpdateCacheKey(
+		"tbl",
+		map[string]interface{}{"name": "a"},
+		map[string]interface{}{"id": 1, "lang": "tr"},
+		false,
+	)
+	updateB := buildUpdateCacheKey(
+		"tbl",
+		map[string]interface{}{"title": "a"},
+		map[string]interface{}{"id": 1, "lang": "tr"},
+		false,
+	)
+	assert.NotEqual(t, updateA, updateB)
+
+	deleteA := buildDeleteCacheKey("tbl", map[string]interface{}{"id": 1, "lang": "tr"}, false)
+	deleteB := buildDeleteCacheKey("tbl", map[string]interface{}{"id": 1, "region": "eu"}, false)
+	assert.NotEqual(t, deleteA, deleteB)
+}
+
 func TestBulk_ProcessBatchWithBatch_UsesBatchTimestampInEventScope(t *testing.T) {
 	session := &captureSession{}
 	ts := int64(123456789)
