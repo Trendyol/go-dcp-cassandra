@@ -17,6 +17,7 @@ import (
 type Bulk struct {
 	session             Session
 	jobCh               chan []BatchItem
+	workerQueues        []chan []BatchItem
 	dcpCheckpointCommit func()
 	batchTicker         *time.Ticker
 	preparedStmts       map[string]string
@@ -49,6 +50,7 @@ type BatchItem struct {
 	Acks            []func()
 	Size            int
 	TimestampMicros *int64
+	VbID            uint16
 }
 
 const (
@@ -76,7 +78,10 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 	if err != nil {
 		return nil, err
 	}
-	workerCount := 1
+	workerCount := cfg.Cassandra.WorkerCount
+	if workerCount <= 0 {
+		workerCount = 1
+	}
 	batchSizeLimit := cfg.Cassandra.BatchSizeLimit
 	if batchSizeLimit <= 0 {
 		batchSizeLimit = 1000
@@ -87,6 +92,10 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 	}
 
 	channelBufferSize := workerCount
+	workerQueues := make([]chan []BatchItem, workerCount)
+	for i := range workerQueues {
+		workerQueues[i] = make(chan []BatchItem, channelBufferSize)
+	}
 
 	b := &Bulk{
 		session:             realSession,
@@ -98,7 +107,8 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 		batch:               make([]BatchItem, 0, batchSizeLimit),
 		batchKeys:           make(map[string]int, batchSizeLimit),
 		workerCount:         workerCount,
-		jobCh:               make(chan []BatchItem, channelBufferSize),
+		workerQueues:        workerQueues,
+		jobCh:               workerQueues[0],
 		shutdownCh:          make(chan struct{}),
 		metric:              &Metric{},
 		preparedStmts:       make(map[string]string),
@@ -114,9 +124,9 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 }
 
 func (b *Bulk) StartBulk() {
-	for i := 0; i < b.workerCount; i++ {
+	for i := 0; i < len(b.workerQueues); i++ {
 		b.wg.Add(1)
-		go b.worker()
+		go b.workerOnQueue(b.workerQueues[i])
 	}
 
 	for {
@@ -125,7 +135,9 @@ func (b *Bulk) StartBulk() {
 			b.flushMessages()
 		case <-b.shutdownCh:
 			b.flushMessages()
-			close(b.jobCh)
+			for _, q := range b.workerQueues {
+				close(q)
+			}
 			b.wg.Wait()
 			return
 		}
@@ -133,8 +145,12 @@ func (b *Bulk) StartBulk() {
 }
 
 func (b *Bulk) worker() {
+	b.workerOnQueue(b.jobCh)
+}
+
+func (b *Bulk) workerOnQueue(queue <-chan []BatchItem) {
 	defer b.wg.Done()
-	for batch := range b.jobCh {
+	for batch := range queue {
 		if batch == nil {
 			continue
 		}
@@ -228,7 +244,7 @@ func (b *Bulk) Close() {
 	b.session.Close()
 }
 
-func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, actions []Model) {
+func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, vbID uint16, actions []Model) {
 	b.flushLock.Lock()
 	defer b.flushLock.Unlock()
 
@@ -250,12 +266,12 @@ func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, acti
 	timestampMicros := b.resolveTimestampMicros(eventTime)
 
 	if b.batchScope == batchScopeEvent {
-		b.processEventScopedActions(actions, ackFn, timestampMicros)
+		b.processEventScopedActions(actions, ackFn, timestampMicros, vbID)
 		return
 	}
 
 	b.ensureBatchCapacity(len(actions))
-	b.addGlobalActions(actions, ackFn, timestampMicros)
+	b.addGlobalActions(actions, ackFn, timestampMicros, vbID)
 
 	if b.batchSize >= b.batchSizeLimit || b.batchByteSize >= b.batchByteSizeLimit {
 		b.flushMessagesLocked()
@@ -282,7 +298,7 @@ func (b *Bulk) resolveTimestampMicros(eventTime time.Time) *int64 {
 	return &ts
 }
 
-func (b *Bulk) processEventScopedActions(actions []Model, ackFn func(), timestampMicros *int64) {
+func (b *Bulk) processEventScopedActions(actions []Model, ackFn func(), timestampMicros *int64, vbID uint16) {
 	eventBatch := make([]BatchItem, 0, len(actions))
 	for _, action := range actions {
 		if action == nil {
@@ -293,6 +309,7 @@ func (b *Bulk) processEventScopedActions(actions []Model, ackFn func(), timestam
 			Size:            1,
 			Acks:            []func(){ackFn},
 			TimestampMicros: timestampMicros,
+			VbID:            vbID,
 		})
 	}
 
@@ -308,7 +325,7 @@ func (b *Bulk) processEventScopedActions(actions []Model, ackFn func(), timestam
 		eventBatch[i].Done = done
 	}
 
-	b.jobCh <- eventBatch
+	b.enqueueBatch(vbID, eventBatch)
 	<-done
 	b.dcpCheckpointCommit()
 }
@@ -327,7 +344,7 @@ func (b *Bulk) ensureBatchCapacity(actionCount int) {
 	b.batch = newBatch
 }
 
-func (b *Bulk) addGlobalActions(actions []Model, ackFn func(), timestampMicros *int64) {
+func (b *Bulk) addGlobalActions(actions []Model, ackFn func(), timestampMicros *int64, vbID uint16) {
 	for _, action := range actions {
 		if action == nil {
 			continue
@@ -343,6 +360,7 @@ func (b *Bulk) addGlobalActions(actions []Model, ackFn func(), timestampMicros *
 				current.Acks = append(current.Acks, ackFn)
 			}
 			current.TimestampMicros = timestampMicros
+			current.VbID = vbID
 			b.batch[batchIndex] = current
 			continue
 		}
@@ -352,6 +370,7 @@ func (b *Bulk) addGlobalActions(actions []Model, ackFn func(), timestampMicros *
 			Size:            1,
 			Acks:            []func(){ackFn},
 			TimestampMicros: timestampMicros,
+			VbID:            vbID,
 		})
 		b.batchKeys[key] = b.batchIndex
 		b.batchIndex++
@@ -371,14 +390,9 @@ func (b *Bulk) flushMessagesLocked() {
 		return
 	}
 	if len(b.batch) > 0 {
-		done := make(chan struct{})
 		batchCopy := make([]BatchItem, len(b.batch))
 		copy(batchCopy, b.batch)
-		for i := range batchCopy {
-			batchCopy[i].Done = done
-		}
-		b.jobCh <- batchCopy
-		<-done
+		b.dispatchBatchByVb(batchCopy)
 		b.batch = b.batch[:0]
 		b.batchKeys = make(map[string]int, b.batchSizeLimit)
 		b.batchIndex = 0
@@ -386,6 +400,47 @@ func (b *Bulk) flushMessagesLocked() {
 		b.batchByteSize = 0
 		b.dcpCheckpointCommit()
 	}
+}
+
+func (b *Bulk) dispatchBatchByVb(items []BatchItem) {
+	if len(items) == 0 {
+		return
+	}
+
+	groupped := make(map[uint16][]BatchItem)
+	order := make([]uint16, 0)
+	for _, item := range items {
+		if _, exists := groupped[item.VbID]; !exists {
+			order = append(order, item.VbID)
+		}
+		groupped[item.VbID] = append(groupped[item.VbID], item)
+	}
+
+	dones := make([]chan struct{}, 0, len(order))
+	for _, vbID := range order {
+		group := make([]BatchItem, len(groupped[vbID]))
+		copy(group, groupped[vbID])
+		done := make(chan struct{})
+		for i := range group {
+			group[i].Done = done
+		}
+		dones = append(dones, done)
+		b.enqueueBatch(vbID, group)
+	}
+
+	for _, done := range dones {
+		<-done
+	}
+}
+
+func (b *Bulk) enqueueBatch(vbID uint16, batch []BatchItem) {
+	if len(b.workerQueues) <= 1 {
+		b.jobCh <- batch
+		return
+	}
+
+	index := int(vbID) % len(b.workerQueues)
+	b.workerQueues[index] <- batch
 }
 
 func (b *Bulk) insert(raw *Raw, timestampMicros *int64) error {

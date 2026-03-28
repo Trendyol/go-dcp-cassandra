@@ -278,7 +278,7 @@ func TestBulk_AddActions_DcpRebalancing(t *testing.T) {
 	actions := []Model{
 		&Raw{Table: "test", Document: map[string]interface{}{"id": "1"}},
 	}
-	bulk.AddActions(nil, time.Now(), actions)
+	bulk.AddActions(nil, time.Now(), 0, actions)
 	if len(bulk.batch) != 0 {
 		t.Error("Batch should remain unchanged when DCP rebalancing")
 	}
@@ -670,7 +670,7 @@ func TestBulk_AddActions_AckAfterWrite_Global(t *testing.T) {
 		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
 	}
 
-	bulk.AddActions(ctx, time.Now(), actions)
+	bulk.AddActions(ctx, time.Now(), 7, actions)
 	assert.False(t, ackCalled)
 
 	bulk.flushMessages()
@@ -699,7 +699,7 @@ func TestBulk_AddActions_AckImmediate_Global(t *testing.T) {
 		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
 	}
 
-	bulk.AddActions(ctx, time.Now(), actions)
+	bulk.AddActions(ctx, time.Now(), 7, actions)
 	assert.True(t, ackCalled)
 }
 
@@ -724,7 +724,7 @@ func TestBulk_AddActions_AckAfterWrite_EventScope(t *testing.T) {
 		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "2"}, Operation: Insert},
 	}
 
-	bulk.AddActions(ctx, time.Now(), actions)
+	bulk.AddActions(ctx, time.Now(), 7, actions)
 	assert.True(t, ackCalled)
 
 	close(bulk.jobCh)
