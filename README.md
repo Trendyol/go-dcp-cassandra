@@ -168,6 +168,15 @@ All DCP-related metrics are automatically injected. It means you don't need to d
 - Timeout errors
 - Network connection issues
 
+## Development
+
+- `make tools`: installs local development tools (`golangci-lint`, `fieldalignment`)
+- `make lint`: runs lint checks
+- `make build`: compiles all packages
+- `make test`: runs tests
+- `make bench`: runs benchmarks
+- `make build-example`: builds example binary at `./bin/example-simple`
+
 ## Contributing
 
 Go DCP Cassandra is always open for direct contributions. For more information please check

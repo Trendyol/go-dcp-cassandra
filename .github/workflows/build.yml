@@ -27,17 +27,16 @@ jobs:
 
       - name: Lint
         run: |
-          make init
           make lint
 
       - name: Install dependencies
         run: go get .
 
       - name: Build
-        run: go build -v ./...
+        run: make build
 
       - name: Test
-        run: go test -v ./...
+        run: make test
 
   security-gates:
     uses: Trendyol/security-actions/.github/workflows/security-gates.yml@master
