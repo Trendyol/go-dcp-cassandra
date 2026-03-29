@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	dcpmodels "github.com/Trendyol/go-dcp/models"
 	"github.com/stretchr/testify/assert"
 
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
@@ -148,7 +149,7 @@ func TestBulk_Insert_NilSession(t *testing.T) {
 		Document:  map[string]interface{}{"product_id": 1},
 		Operation: Insert,
 	}
-	err := bulk.insert(raw)
+	err := bulk.insert(raw, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "session is nil")
 }
@@ -296,14 +297,14 @@ func TestBulk_InsertUpdateDelete_Success(t *testing.T) {
 		Document:  map[string]interface{}{"product_id": 1, "culture": "tr"},
 		Operation: Insert,
 	}
-	assert.NoError(t, bulk.insert(raw))
+	assert.NoError(t, bulk.insert(raw, nil))
 
 	raw.Operation = Update
 	raw.Filter = map[string]interface{}{"product_id": 1}
-	assert.NoError(t, bulk.update(raw))
+	assert.NoError(t, bulk.update(raw, nil))
 
 	raw.Operation = Delete
-	assert.NoError(t, bulk.delete(raw))
+	assert.NoError(t, bulk.delete(raw, nil))
 }
 
 func TestBulk_FlushMessages_ResetsBatch(t *testing.T) {
@@ -346,7 +347,7 @@ func TestBulk_WorkerHandlesError(t *testing.T) {
 		Operation: Insert,
 	}
 
-	err := bulk.insert(raw)
+	err := bulk.insert(raw, nil)
 	assert.Error(t, err, "Expected error from mockSessionErr")
 	assert.Contains(t, err.Error(), "mock error")
 }
@@ -364,7 +365,7 @@ func TestBulk_ErrorHandling_Operations(t *testing.T) {
 		Document:  map[string]interface{}{"id": "1"},
 		Operation: Insert,
 	}
-	err := bulk.insert(insertRaw)
+	err := bulk.insert(insertRaw, nil)
 	assert.Error(t, err)
 
 	updateRaw := &Raw{
@@ -373,7 +374,7 @@ func TestBulk_ErrorHandling_Operations(t *testing.T) {
 		Filter:    map[string]interface{}{"id": "1"},
 		Operation: Update,
 	}
-	err = bulk.update(updateRaw)
+	err = bulk.update(updateRaw, nil)
 	assert.Error(t, err)
 
 	deleteRaw := &Raw{
@@ -381,7 +382,7 @@ func TestBulk_ErrorHandling_Operations(t *testing.T) {
 		Filter:    map[string]interface{}{"id": "1"},
 		Operation: Delete,
 	}
-	err = bulk.delete(deleteRaw)
+	err = bulk.delete(deleteRaw, nil)
 	assert.Error(t, err)
 }
 
@@ -409,11 +410,11 @@ func TestBulk_PreparedStatementCaching(t *testing.T) {
 		Operation: Insert,
 	}
 
-	cacheKey1 := fmt.Sprintf("INSERT:%s:%d", raw.Table, len(raw.Document))
-	query1 := bulk.getCachedPreparedStatement(cacheKey1, raw, "INSERT")
+	cacheKey1 := fmt.Sprintf("INSERT:%s:%d:%t", raw.Table, len(raw.Document), false)
+	query1 := bulk.getCachedPreparedStatement(cacheKey1, raw, "INSERT", false)
 	assert.NotEmpty(t, query1)
 
-	query2 := bulk.getCachedPreparedStatement(cacheKey1, raw, "INSERT")
+	query2 := bulk.getCachedPreparedStatement(cacheKey1, raw, "INSERT", false)
 	assert.Equal(t, query1, query2)
 
 	bulk.preparedStmtsMutex.RLock()
@@ -579,7 +580,7 @@ func TestBulk_PreparedStatementCache_ConcurrentAccess(t *testing.T) {
 				Document:  map[string]interface{}{"id": fmt.Sprintf("doc%d", id), "name": fmt.Sprintf("test%d", id)},
 				Operation: Insert,
 			}
-			_ = bulk.insert(raw)
+			_ = bulk.insert(raw, nil)
 		}(i)
 	}
 	wg.Wait()
@@ -644,4 +645,108 @@ func TestBulk_BatchErrorHandling_NoCouchbaseCommit(t *testing.T) {
 	}()
 
 	bulk.processBatch(batch)
+}
+
+func TestBulk_AddActions_AckAfterWrite_Global(t *testing.T) {
+	ackCalled := false
+	bulk := &Bulk{
+		session:             &mockSession{},
+		jobCh:               make(chan []BatchItem, 1),
+		dcpCheckpointCommit: func() {},
+		batch:               make([]BatchItem, 0, 10),
+		batchKeys:           make(map[string]int, 10),
+		batchSizeLimit:      10,
+		batchByteSizeLimit:  1024,
+		metric:              &Metric{},
+		preparedStmts:       make(map[string]string),
+		preparedStmtsMutex:  sync.RWMutex{},
+	}
+
+	bulk.wg.Add(1)
+	go bulk.worker()
+
+	ctx := &dcpmodels.ListenerContext{Ack: func() { ackCalled = true }}
+	actions := []Model{
+		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+	}
+
+	bulk.AddActions(ctx, time.Now(), actions)
+	assert.False(t, ackCalled)
+
+	bulk.flushMessages()
+	assert.True(t, ackCalled)
+
+	close(bulk.jobCh)
+	bulk.wg.Wait()
+}
+
+func TestBulk_AddActions_AckImmediate_Global(t *testing.T) {
+	ackCalled := false
+	bulk := &Bulk{
+		session:            &mockSession{},
+		batch:              make([]BatchItem, 0, 10),
+		batchKeys:          make(map[string]int, 10),
+		batchSizeLimit:     10,
+		batchByteSizeLimit: 1024,
+		ackMode:            ackModeImmediate,
+		metric:             &Metric{},
+		preparedStmts:      make(map[string]string),
+		preparedStmtsMutex: sync.RWMutex{},
+	}
+
+	ctx := &dcpmodels.ListenerContext{Ack: func() { ackCalled = true }}
+	actions := []Model{
+		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+	}
+
+	bulk.AddActions(ctx, time.Now(), actions)
+	assert.True(t, ackCalled)
+}
+
+func TestBulk_AddActions_AckAfterWrite_EventScope(t *testing.T) {
+	ackCalled := false
+	bulk := &Bulk{
+		session:             &mockSession{},
+		jobCh:               make(chan []BatchItem, 1),
+		dcpCheckpointCommit: func() {},
+		batchScope:          batchScopeEvent,
+		metric:              &Metric{},
+		preparedStmts:       make(map[string]string),
+		preparedStmtsMutex:  sync.RWMutex{},
+	}
+
+	bulk.wg.Add(1)
+	go bulk.worker()
+
+	ctx := &dcpmodels.ListenerContext{Ack: func() { ackCalled = true }}
+	actions := []Model{
+		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "2"}, Operation: Insert},
+	}
+
+	bulk.AddActions(ctx, time.Now(), actions)
+	assert.True(t, ackCalled)
+
+	close(bulk.jobCh)
+	bulk.wg.Wait()
+}
+
+func TestBulk_PreparedStatement_WithTimestamp(t *testing.T) {
+	bulk := &Bulk{
+		keyspace:           "ks",
+		preparedStmts:      make(map[string]string),
+		preparedStmtsMutex: sync.RWMutex{},
+	}
+
+	insert := &Raw{Table: "tbl", Document: map[string]interface{}{"id": "1"}}
+	update := &Raw{Table: "tbl", Document: map[string]interface{}{"name": "v"}, Filter: map[string]interface{}{"id": "1"}}
+	deleteModel := &Raw{Table: "tbl", Filter: map[string]interface{}{"id": "1"}}
+
+	insertQ := bulk.getCachedPreparedStatement("i", insert, "INSERT", true)
+	updateQ := bulk.getCachedPreparedStatement("u", update, "UPDATE", true)
+	deleteQ := bulk.getCachedPreparedStatement("d", deleteModel, "DELETE", true)
+
+	assert.Contains(t, insertQ, "USING TIMESTAMP ?")
+	assert.Contains(t, updateQ, "USING TIMESTAMP ?")
+	assert.Contains(t, deleteQ, "USING TIMESTAMP ?")
 }

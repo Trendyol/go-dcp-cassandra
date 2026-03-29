@@ -20,6 +20,9 @@ type Cassandra struct {
 	Compressor        string `yaml:"compressor"`
 	SerialConsistency string `yaml:"serialConsistency"`
 	BatchType         string `yaml:"batchType"`
+	BatchScope        string `yaml:"batchScope"`
+	AckMode           string `yaml:"ackMode"`
+	WriteTimestamp    string `yaml:"writeTimestamp"`
 	Consistency       string `yaml:"consistency"`
 	TableName         string `yaml:"tableName"`
 	SSL               struct {
@@ -78,12 +81,7 @@ func (c *Cassandra) setDefaults() {
 		c.Consistency = consistency
 	}
 
-	if c.BatchType == "" {
-		c.BatchType = "logged"
-	}
-	if c.MaxBatchSize <= 0 {
-		c.MaxBatchSize = 65536
-	}
+	c.setBatchDefaults()
 
 	if c.NumConns <= 0 {
 		c.NumConns = 2
@@ -108,6 +106,37 @@ func (c *Cassandra) setDefaults() {
 	}
 	if c.RetryPolicy.MaxRetryDelay <= 0 {
 		c.RetryPolicy.MaxRetryDelay = 1 * time.Second
+	}
+}
+
+func (c *Cassandra) setBatchDefaults() {
+	if c.BatchType == "" {
+		c.BatchType = "logged"
+	}
+
+	batchScope := strings.TrimSpace(strings.ToLower(c.BatchScope))
+	if batchScope != "event" && batchScope != "global" {
+		c.BatchScope = "global"
+	} else {
+		c.BatchScope = batchScope
+	}
+
+	ackMode := strings.TrimSpace(strings.ToLower(c.AckMode))
+	if ackMode != "immediate" && ackMode != "after_write" {
+		c.AckMode = "after_write"
+	} else {
+		c.AckMode = ackMode
+	}
+
+	writeTimestamp := strings.TrimSpace(strings.ToLower(c.WriteTimestamp))
+	if writeTimestamp != "none" && writeTimestamp != "event_time" {
+		c.WriteTimestamp = "none"
+	} else {
+		c.WriteTimestamp = writeTimestamp
+	}
+
+	if c.MaxBatchSize <= 0 {
+		c.MaxBatchSize = 65536
 	}
 }
 
