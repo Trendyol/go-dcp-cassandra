@@ -210,7 +210,7 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 	startedTime := time.Now()
 
 	if b.useBatch {
-		err := b.processBatchWithBatch(batch)
+		err := b.processWithCqlBatch(batch)
 		if err != nil {
 			log.Printf("Cassandra batch write error: %v", err)
 			panic(fmt.Sprintf("Cassandra batch write failed: %v", err))
@@ -737,12 +737,17 @@ func getBatchType(batchTypeStr string) BatchType {
 }
 
 //nolint:funlen
-func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
+func (b *Bulk) processWithCqlBatch(items []BatchItem) error {
 	if len(items) == 0 {
 		return nil
 	}
 
 	batch := b.session.NewBatch(b.batchType)
+	useBatchTimestamp := b.batchScope == batchScopeEvent && items[0].TimestampMicros != nil
+	allowBatchSplitting := b.batchScope != batchScopeEvent
+	if useBatchTimestamp {
+		batch.WithTimestamp(*items[0].TimestampMicros)
+	}
 
 	for _, item := range items {
 		if item.Model == nil {
@@ -756,12 +761,12 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 
 		var query string
 		var values []interface{}
-		withTimestamp := item.TimestampMicros != nil
+		queryWithTimestamp := item.TimestampMicros != nil && !useBatchTimestamp
 
 		switch rawModel.Operation {
 		case Insert, Upsert:
-			cacheKey := fmt.Sprintf("INSERT:%s:%d:%t", rawModel.Table, len(rawModel.Document), withTimestamp)
-			query = b.getCachedPreparedStatement(cacheKey, rawModel, "INSERT", withTimestamp)
+			cacheKey := fmt.Sprintf("INSERT:%s:%d:%t", rawModel.Table, len(rawModel.Document), queryWithTimestamp)
+			query = b.getCachedPreparedStatement(cacheKey, rawModel, "INSERT", queryWithTimestamp)
 
 			// Sort columns to match the query preparation order
 			columns := make([]string, 0, len(rawModel.Document))
@@ -774,13 +779,13 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 			for _, column := range columns {
 				values = append(values, rawModel.Document[column])
 			}
-			if withTimestamp {
+			if queryWithTimestamp {
 				values = append(values, *item.TimestampMicros)
 			}
 
 		case Update:
-			cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d:%t", rawModel.Table, len(rawModel.Document), len(rawModel.Filter), withTimestamp)
-			query = b.getCachedPreparedStatement(cacheKey, rawModel, "UPDATE", withTimestamp)
+			cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d:%t", rawModel.Table, len(rawModel.Document), len(rawModel.Filter), queryWithTimestamp)
+			query = b.getCachedPreparedStatement(cacheKey, rawModel, "UPDATE", queryWithTimestamp)
 
 			// Sort columns to match the query preparation order
 			docColumns := make([]string, 0, len(rawModel.Document))
@@ -797,7 +802,7 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 
 			values = make([]interface{}, 0, len(rawModel.Document)+len(rawModel.Filter)+1)
 
-			if withTimestamp {
+			if queryWithTimestamp {
 				values = append(values, *item.TimestampMicros)
 			}
 
@@ -810,8 +815,8 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 			}
 
 		case Delete:
-			cacheKey := fmt.Sprintf("DELETE:%s:%d:%t", rawModel.Table, len(rawModel.Filter), withTimestamp)
-			query = b.getCachedPreparedStatement(cacheKey, rawModel, "DELETE", withTimestamp)
+			cacheKey := fmt.Sprintf("DELETE:%s:%d:%t", rawModel.Table, len(rawModel.Filter), queryWithTimestamp)
+			query = b.getCachedPreparedStatement(cacheKey, rawModel, "DELETE", queryWithTimestamp)
 
 			// Sort columns to match the query preparation order
 			filterColumns := make([]string, 0, len(rawModel.Filter))
@@ -821,7 +826,7 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 			sort.Strings(filterColumns)
 
 			values = make([]interface{}, 0, len(rawModel.Filter)+1)
-			if withTimestamp {
+			if queryWithTimestamp {
 				values = append(values, *item.TimestampMicros)
 			}
 			for _, column := range filterColumns {
@@ -831,7 +836,7 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 
 		batch.Query(query, values...)
 
-		if batch.Size() >= b.maxBatchSize {
+		if allowBatchSplitting && batch.Size() >= b.maxBatchSize {
 			if err := batch.ExecuteBatch(); err != nil {
 				return err
 			}
