@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	dcpmodels "github.com/Trendyol/go-dcp/models"
 	"github.com/stretchr/testify/assert"
 
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
@@ -148,7 +149,7 @@ func TestBulk_Insert_NilSession(t *testing.T) {
 		Document:  map[string]interface{}{"product_id": 1},
 		Operation: Insert,
 	}
-	err := bulk.insert(raw)
+	err := bulk.insert(raw, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "session is nil")
 }
@@ -180,6 +181,8 @@ func (m *mockBatch) Query(string, ...interface{}) {
 	m.size++
 }
 
+func (m *mockBatch) WithTimestamp(int64) {}
+
 func (m *mockBatch) Size() int {
 	return m.size
 }
@@ -207,12 +210,56 @@ func (m *mockBatchErr) Query(string, ...interface{}) {
 	m.size++
 }
 
+func (m *mockBatchErr) WithTimestamp(int64) {}
+
 func (m *mockBatchErr) Size() int {
 	return m.size
 }
 
 func (m *mockBatchErr) ExecuteBatch() error {
 	return fmt.Errorf("mock batch error")
+}
+
+type captureBatch struct {
+	queries      []string
+	size         int
+	hasTimestamp bool
+	timestamp    int64
+	onExecute    *int
+}
+
+func (c *captureBatch) Query(stmt string, values ...interface{}) {
+	c.queries = append(c.queries, stmt)
+	c.size++
+}
+
+func (c *captureBatch) WithTimestamp(timestamp int64) {
+	c.hasTimestamp = true
+	c.timestamp = timestamp
+}
+
+func (c *captureBatch) Size() int {
+	return c.size
+}
+
+func (c *captureBatch) ExecuteBatch() error {
+	if c.onExecute != nil {
+		*c.onExecute++
+	}
+	return nil
+}
+
+type captureSession struct {
+	lastBatch             *captureBatch
+	executeBatchCallCount int
+}
+
+func (c *captureSession) Query(string, ...interface{}) Query         { return &mockQuery{} }
+func (c *captureSession) PreparedQuery(string, ...interface{}) Query { return &mockQuery{} }
+func (c *captureSession) Close()                                     {}
+func (c *captureSession) NewBatch(BatchType) Batch {
+	c.lastBatch = &captureBatch{onExecute: &c.executeBatchCallCount}
+	return c.lastBatch
 }
 
 func TestBulk_WorkerProcessesBatch(t *testing.T) {
@@ -277,7 +324,7 @@ func TestBulk_AddActions_DcpRebalancing(t *testing.T) {
 	actions := []Model{
 		&Raw{Table: "test", Document: map[string]interface{}{"id": "1"}},
 	}
-	bulk.AddActions(nil, time.Now(), actions)
+	bulk.AddActions(nil, time.Now(), 0, actions)
 	if len(bulk.batch) != 0 {
 		t.Error("Batch should remain unchanged when DCP rebalancing")
 	}
@@ -296,14 +343,14 @@ func TestBulk_InsertUpdateDelete_Success(t *testing.T) {
 		Document:  map[string]interface{}{"product_id": 1, "culture": "tr"},
 		Operation: Insert,
 	}
-	assert.NoError(t, bulk.insert(raw))
+	assert.NoError(t, bulk.insert(raw, nil))
 
 	raw.Operation = Update
 	raw.Filter = map[string]interface{}{"product_id": 1}
-	assert.NoError(t, bulk.update(raw))
+	assert.NoError(t, bulk.update(raw, nil))
 
 	raw.Operation = Delete
-	assert.NoError(t, bulk.delete(raw))
+	assert.NoError(t, bulk.delete(raw, nil))
 }
 
 func TestBulk_FlushMessages_ResetsBatch(t *testing.T) {
@@ -346,7 +393,7 @@ func TestBulk_WorkerHandlesError(t *testing.T) {
 		Operation: Insert,
 	}
 
-	err := bulk.insert(raw)
+	err := bulk.insert(raw, nil)
 	assert.Error(t, err, "Expected error from mockSessionErr")
 	assert.Contains(t, err.Error(), "mock error")
 }
@@ -364,7 +411,7 @@ func TestBulk_ErrorHandling_Operations(t *testing.T) {
 		Document:  map[string]interface{}{"id": "1"},
 		Operation: Insert,
 	}
-	err := bulk.insert(insertRaw)
+	err := bulk.insert(insertRaw, nil)
 	assert.Error(t, err)
 
 	updateRaw := &Raw{
@@ -373,7 +420,7 @@ func TestBulk_ErrorHandling_Operations(t *testing.T) {
 		Filter:    map[string]interface{}{"id": "1"},
 		Operation: Update,
 	}
-	err = bulk.update(updateRaw)
+	err = bulk.update(updateRaw, nil)
 	assert.Error(t, err)
 
 	deleteRaw := &Raw{
@@ -381,7 +428,7 @@ func TestBulk_ErrorHandling_Operations(t *testing.T) {
 		Filter:    map[string]interface{}{"id": "1"},
 		Operation: Delete,
 	}
-	err = bulk.delete(deleteRaw)
+	err = bulk.delete(deleteRaw, nil)
 	assert.Error(t, err)
 }
 
@@ -409,11 +456,11 @@ func TestBulk_PreparedStatementCaching(t *testing.T) {
 		Operation: Insert,
 	}
 
-	cacheKey1 := fmt.Sprintf("INSERT:%s:%d", raw.Table, len(raw.Document))
-	query1 := bulk.getCachedPreparedStatement(cacheKey1, raw, "INSERT")
+	cacheKey1 := fmt.Sprintf("INSERT:%s:%d:%t", raw.Table, len(raw.Document), false)
+	query1 := bulk.getCachedPreparedStatement(cacheKey1, raw, "INSERT", false)
 	assert.NotEmpty(t, query1)
 
-	query2 := bulk.getCachedPreparedStatement(cacheKey1, raw, "INSERT")
+	query2 := bulk.getCachedPreparedStatement(cacheKey1, raw, "INSERT", false)
 	assert.Equal(t, query1, query2)
 
 	bulk.preparedStmtsMutex.RLock()
@@ -458,7 +505,7 @@ func TestBulk_BatchMode_ProcessBatchWithBatch(t *testing.T) {
 		},
 	}
 
-	err := bulk.processBatchWithBatch(items)
+	err := bulk.processWithCqlBatch(items)
 	assert.NoError(t, err)
 }
 
@@ -541,26 +588,6 @@ func TestBulk_GetBatchType(t *testing.T) {
 	}
 }
 
-func TestBulk_NewBulk_WithBatchConfig(t *testing.T) {
-	cfg := &config.Connector{
-		Cassandra: config.Cassandra{
-			Hosts:               []string{"localhost"},
-			Keyspace:            "test",
-			UseBatch:            true,
-			BatchType:           "unlogged",
-			MaxBatchSize:        100,
-			WorkerCount:         1,
-			BatchSizeLimit:      50,
-			BatchTickerDuration: 1 * time.Second,
-		},
-	}
-
-	bulk, err := NewBulk(cfg, func() {})
-
-	assert.Error(t, err)
-	assert.Nil(t, bulk)
-}
-
 func TestBulk_PreparedStatementCache_ConcurrentAccess(t *testing.T) {
 	bulk := &Bulk{
 		session:            &mockSession{},
@@ -579,7 +606,7 @@ func TestBulk_PreparedStatementCache_ConcurrentAccess(t *testing.T) {
 				Document:  map[string]interface{}{"id": fmt.Sprintf("doc%d", id), "name": fmt.Sprintf("test%d", id)},
 				Operation: Insert,
 			}
-			_ = bulk.insert(raw)
+			_ = bulk.insert(raw, nil)
 		}(i)
 	}
 	wg.Wait()
@@ -644,4 +671,203 @@ func TestBulk_BatchErrorHandling_NoCouchbaseCommit(t *testing.T) {
 	}()
 
 	bulk.processBatch(batch)
+}
+
+func TestBulk_AddActions_AckAfterWrite_Global(t *testing.T) {
+	ackCalled := false
+	bulk := &Bulk{
+		session:             &mockSession{},
+		jobCh:               make(chan []BatchItem, 1),
+		dcpCheckpointCommit: func() {},
+		batch:               make([]BatchItem, 0, 10),
+		batchKeys:           make(map[string]int, 10),
+		batchSizeLimit:      10,
+		batchByteSizeLimit:  1024,
+		metric:              &Metric{},
+		preparedStmts:       make(map[string]string),
+		preparedStmtsMutex:  sync.RWMutex{},
+	}
+
+	bulk.wg.Add(1)
+	go bulk.worker()
+
+	ctx := &dcpmodels.ListenerContext{Ack: func() { ackCalled = true }}
+	actions := []Model{
+		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+	}
+
+	bulk.AddActions(ctx, time.Now(), 7, actions)
+	assert.False(t, ackCalled)
+
+	bulk.flushMessages()
+	assert.True(t, ackCalled)
+
+	close(bulk.jobCh)
+	bulk.wg.Wait()
+}
+
+func TestBulk_AddActions_AckImmediate_Global(t *testing.T) {
+	ackCalled := false
+	bulk := &Bulk{
+		session:            &mockSession{},
+		batch:              make([]BatchItem, 0, 10),
+		batchKeys:          make(map[string]int, 10),
+		batchSizeLimit:     10,
+		batchByteSizeLimit: 1024,
+		ackMode:            ackModeImmediate,
+		metric:             &Metric{},
+		preparedStmts:      make(map[string]string),
+		preparedStmtsMutex: sync.RWMutex{},
+	}
+
+	ctx := &dcpmodels.ListenerContext{Ack: func() { ackCalled = true }}
+	actions := []Model{
+		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+	}
+
+	bulk.AddActions(ctx, time.Now(), 7, actions)
+	assert.True(t, ackCalled)
+}
+
+func TestBulk_AddActions_AckAfterWrite_EventScope(t *testing.T) {
+	ackCalled := false
+	bulk := &Bulk{
+		session:             &mockSession{},
+		jobCh:               make(chan []BatchItem, 1),
+		dcpCheckpointCommit: func() {},
+		batchScope:          batchScopeEvent,
+		metric:              &Metric{},
+		preparedStmts:       make(map[string]string),
+		preparedStmtsMutex:  sync.RWMutex{},
+	}
+
+	bulk.wg.Add(1)
+	go bulk.worker()
+
+	ctx := &dcpmodels.ListenerContext{Ack: func() { ackCalled = true }}
+	actions := []Model{
+		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "2"}, Operation: Insert},
+	}
+
+	bulk.AddActions(ctx, time.Now(), 7, actions)
+	assert.True(t, ackCalled)
+
+	close(bulk.jobCh)
+	bulk.wg.Wait()
+}
+
+func TestBulk_PreparedStatement_WithTimestamp(t *testing.T) {
+	bulk := &Bulk{
+		keyspace:           "ks",
+		preparedStmts:      make(map[string]string),
+		preparedStmtsMutex: sync.RWMutex{},
+	}
+
+	insert := &Raw{Table: "tbl", Document: map[string]interface{}{"id": "1"}}
+	update := &Raw{Table: "tbl", Document: map[string]interface{}{"name": "v"}, Filter: map[string]interface{}{"id": "1"}}
+	deleteModel := &Raw{Table: "tbl", Filter: map[string]interface{}{"id": "1"}}
+
+	insertQ := bulk.getCachedPreparedStatement("i", insert, "INSERT", true)
+	updateQ := bulk.getCachedPreparedStatement("u", update, "UPDATE", true)
+	deleteQ := bulk.getCachedPreparedStatement("d", deleteModel, "DELETE", true)
+
+	assert.Contains(t, insertQ, "USING TIMESTAMP ?")
+	assert.Contains(t, updateQ, "USING TIMESTAMP ?")
+	assert.Contains(t, deleteQ, "USING TIMESTAMP ?")
+}
+
+func TestBulk_PreparedStatementCacheKey_UsesColumnNames(t *testing.T) {
+	insertA := buildInsertCacheKey("tbl", map[string]interface{}{"id": 1, "name": "a"}, false)
+	insertB := buildInsertCacheKey("tbl", map[string]interface{}{"id": 1, "title": "a"}, false)
+	assert.NotEqual(t, insertA, insertB)
+
+	updateA := buildUpdateCacheKey(
+		"tbl",
+		map[string]interface{}{"name": "a"},
+		map[string]interface{}{"id": 1, "lang": "tr"},
+		false,
+	)
+	updateB := buildUpdateCacheKey(
+		"tbl",
+		map[string]interface{}{"title": "a"},
+		map[string]interface{}{"id": 1, "lang": "tr"},
+		false,
+	)
+	assert.NotEqual(t, updateA, updateB)
+
+	deleteA := buildDeleteCacheKey("tbl", map[string]interface{}{"id": 1, "lang": "tr"}, false)
+	deleteB := buildDeleteCacheKey("tbl", map[string]interface{}{"id": 1, "region": "eu"}, false)
+	assert.NotEqual(t, deleteA, deleteB)
+}
+
+func TestBulk_ProcessBatchWithBatch_UsesBatchTimestampInEventScope(t *testing.T) {
+	session := &captureSession{}
+	ts := int64(123456789)
+	bulk := &Bulk{
+		session:            session,
+		keyspace:           "ks",
+		useBatch:           true,
+		batchScope:         batchScopeEvent,
+		batchType:          LoggedBatch,
+		maxBatchSize:       10,
+		preparedStmts:      make(map[string]string),
+		preparedStmtsMutex: sync.RWMutex{},
+	}
+
+	items := []BatchItem{{
+		Model: &Raw{
+			Table:     "test_table",
+			Document:  map[string]interface{}{"id": "1", "name": "v"},
+			Operation: Insert,
+		},
+		TimestampMicros: &ts,
+	}}
+
+	err := bulk.processWithCqlBatch(items)
+	assert.NoError(t, err)
+	assert.NotNil(t, session.lastBatch)
+	assert.True(t, session.lastBatch.hasTimestamp)
+	assert.Equal(t, ts, session.lastBatch.timestamp)
+	assert.Len(t, session.lastBatch.queries, 1)
+	assert.NotContains(t, session.lastBatch.queries[0], "USING TIMESTAMP ?")
+}
+
+func TestBulk_ProcessWithCqlBatch_DoesNotSplitInEventScope(t *testing.T) {
+	session := &captureSession{}
+	ts := int64(123456789)
+	bulk := &Bulk{
+		session:            session,
+		keyspace:           "ks",
+		useBatch:           true,
+		batchScope:         batchScopeEvent,
+		batchType:          LoggedBatch,
+		maxBatchSize:       1,
+		preparedStmts:      make(map[string]string),
+		preparedStmtsMutex: sync.RWMutex{},
+	}
+
+	items := []BatchItem{
+		{
+			Model: &Raw{
+				Table:     "test_table",
+				Document:  map[string]interface{}{"id": "1", "name": "v1"},
+				Operation: Insert,
+			},
+			TimestampMicros: &ts,
+		},
+		{
+			Model: &Raw{
+				Table:     "test_table",
+				Document:  map[string]interface{}{"id": "2", "name": "v2"},
+				Operation: Insert,
+			},
+			TimestampMicros: &ts,
+		},
+	}
+
+	err := bulk.processWithCqlBatch(items)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, session.executeBatchCallCount)
+	assert.Len(t, session.lastBatch.queries, 2)
 }

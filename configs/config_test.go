@@ -57,6 +57,9 @@ func TestCassandra_SetDefaults_BatchConfig(t *testing.T) {
 
 	// Test batch defaults
 	assert.Equal(t, "logged", cassandra.BatchType)
+	assert.Equal(t, "global", cassandra.BatchScope)
+	assert.Equal(t, "after_write", cassandra.AckMode)
+	assert.Equal(t, "none", cassandra.WriteTimestamp)
 	assert.Equal(t, 65536, cassandra.MaxBatchSize)
 }
 
@@ -85,6 +88,9 @@ func TestCassandra_SetDefaults_RetryPolicy(t *testing.T) {
 func TestCassandra_SetDefaults_CustomValues(t *testing.T) {
 	cassandra := Cassandra{
 		BatchType:        "unlogged",
+		BatchScope:       "event",
+		AckMode:          "immediate",
+		WriteTimestamp:   "event_time",
 		MaxBatchSize:     1000,
 		NumConns:         5,
 		ConnectTimeout:   10 * time.Second,
@@ -104,6 +110,9 @@ func TestCassandra_SetDefaults_CustomValues(t *testing.T) {
 
 	// Custom values should remain unchanged
 	assert.Equal(t, "unlogged", cassandra.BatchType)
+	assert.Equal(t, "event", cassandra.BatchScope)
+	assert.Equal(t, "immediate", cassandra.AckMode)
+	assert.Equal(t, "event_time", cassandra.WriteTimestamp)
 	assert.Equal(t, 1000, cassandra.MaxBatchSize)
 	assert.Equal(t, 5, cassandra.NumConns)
 	assert.Equal(t, 10*time.Second, cassandra.ConnectTimeout)
@@ -111,6 +120,27 @@ func TestCassandra_SetDefaults_CustomValues(t *testing.T) {
 	assert.Equal(t, 5, cassandra.RetryPolicy.NumRetries)
 	assert.Equal(t, 50*time.Millisecond, cassandra.RetryPolicy.MinRetryDelay)
 	assert.Equal(t, 2*time.Second, cassandra.RetryPolicy.MaxRetryDelay)
+}
+
+func TestCassandra_SetDefaults_WriteTimestampModes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "event time", input: "event_time", expected: "event_time"},
+		{name: "now", input: "now", expected: "now"},
+		{name: "none", input: "none", expected: "none"},
+		{name: "invalid", input: "foobar", expected: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cassandra := Cassandra{WriteTimestamp: tt.input}
+			cassandra.setDefaults()
+			assert.Equal(t, tt.expected, cassandra.WriteTimestamp)
+		})
+	}
 }
 
 func TestConnector_ApplyDefaults(t *testing.T) {

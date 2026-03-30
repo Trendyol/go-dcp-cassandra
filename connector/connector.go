@@ -107,7 +107,7 @@ func (c *connector) listener(ctx *models.ListenerContext) {
 		return
 	}
 
-	c.bulk.AddActions(ctx, e.EventTime, actions)
+	c.bulk.AddActions(ctx, e.EventTime, e.VbID, actions)
 }
 
 func (c *connector) GetBulk() *cassandra.Bulk {
