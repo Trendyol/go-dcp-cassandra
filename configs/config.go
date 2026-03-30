@@ -129,7 +129,7 @@ func (c *Cassandra) setBatchDefaults() {
 	}
 
 	writeTimestamp := strings.TrimSpace(strings.ToLower(c.WriteTimestamp))
-	if writeTimestamp != "none" && writeTimestamp != "event_time" && writeTimestamp != "now" {
+	if writeTimestamp != "none" && writeTimestamp != "event_time" {
 		c.WriteTimestamp = "none"
 	} else {
 		c.WriteTimestamp = writeTimestamp

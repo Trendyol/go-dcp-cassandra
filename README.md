@@ -105,7 +105,7 @@ Check out on [go-dcp](https://github.com/Trendyol/go-dcp#configuration)
 | `cassandra.maxBatchSize`                                | int                      | no       | 65536   | Maximum number of statements sent in a single CQL batch execution                                  |
 | `cassandra.batchScope`                                  | string                   | no       | global  | `global` mixes actions across events until flush; `event` batches actions per single DCP event    |
 | `cassandra.ackMode`                                     | string                   | no       | after_write | `after_write` acks offsets only after successful Cassandra write; `immediate` acks before flush |
-| `cassandra.writeTimestamp`                              | string                   | no       | none    | `event_time` uses DCP event time, `now` uses connector write time, `none` uses Cassandra default timestamp |
+| `cassandra.writeTimestamp`                              | string                   | no       | none    | `event_time` adds `USING TIMESTAMP` from DCP event time; `none` uses Cassandra default timestamp |
 | `cassandra.workerCount`                                 | int                      | no       | 1       | Number of parallel workers                                                                         |
 | `cassandra.tableName`                                   | string                   | no       |         | Target table name (used when no collection mapping is configured)                                  |
 | `cassandra.consistency`                                 | string                   | no       | QUORUM  | Cassandra consistency level                                                                        |
@@ -138,12 +138,9 @@ Check out on [go-dcp](https://github.com/Trendyol/go-dcp#configuration)
   - `update`/`delete`: uses `Filter` fields
   - if key fields are empty/non-raw model, the action is treated as unique (no dedup key match)
 - For `batchScope: event`, CQL execution does not split by `maxBatchSize`; one event remains one batch execution.
-- `cassandra.writeTimestamp` controls write timestamp source:
-  - `event_time`: uses DCP event time
-  - `now`: uses connector-side current time when actions are enqueued
-  - `none`: relies on Cassandra coordinator timestamp
-  - `batchScope: event` + `useBatch: true`: applies one batch-level timestamp
-  - otherwise: applies per-query `USING TIMESTAMP`
+- `cassandra.writeTimestamp: event_time` uses DCP event time as write timestamp:
+  - `batchScope: event` + `useBatch: true`: applies one batch-level timestamp.
+  - otherwise: applies per-query `USING TIMESTAMP`.
 
 ### Collection Table Mapping Configuration
 
