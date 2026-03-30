@@ -46,6 +46,46 @@ func main() {
 }
 ```
 
+## How It Works
+
+### Write Pipeline
+
+```
+Couchbase DCP
+     │
+     ▼
+  mapper()      ← your code transforms a DCP event into []cassandra.Model
+     │
+     ▼
+  jobQueue      ← bounded channel (workerQueueSize slots, default workerCount×4)
+     │
+     ▼
+  worker pool   ← workerCount goroutines, each writing serially to Cassandra
+     │
+     ▼
+  Cassandra
+```
+
+### Worker Pool
+
+Each DCP event is passed directly to the job queue and picked up by the next available worker. Workers process items serially — one Cassandra write at a time — so `workerCount` is a hard cap on concurrent Cassandra connections. Set it to match the number of Cassandra nodes for optimal throughput.
+
+The job queue (`workerQueueSize`, default `workerCount × 4`) allows workers to pick up the next batch immediately after finishing a write without waiting for the next `AddActions` call. When the queue is full, `AddActions` blocks, providing natural backpressure from Cassandra back to the DCP stream.
+
+### Acknowledgement Modes
+
+**`ackMode: after_write`** (default): the DCP event is acknowledged only after the Cassandra write completes. On a crash, unwritten events will be replayed. Stronger durability guarantee, slightly lower throughput.
+
+**`ackMode: immediate`**: the DCP event is acknowledged as soon as it enters the buffer, before the write. Higher throughput. On a crash, events that were buffered but not yet written will not be replayed. Safe only if writes are idempotent (upserts are; deletes are).
+
+### Write Timestamp
+
+Set `writeTimestamp` to attach a `USING TIMESTAMP` clause to every write:
+
+- `none` (default): no timestamp clause; Cassandra uses the server-side write time
+- `event_time`: uses the DCP event time in microseconds; useful for last-write-wins conflict resolution across concurrent writers
+- `now`: uses the wall clock at write time in microseconds
+
 ## Configuration
 
 ### Example Configuration
@@ -67,10 +107,10 @@ cassandra:
     - localhost:9042
   keyspace: example_keyspace
   timeout: 10s
-  batchSizeLimit: 1000
-  batchByteSizeLimit: 10485760
-  workerCount: 4
-  batchTickerDuration: 5s
+  workerCount: 20        # set to number of Cassandra nodes
+  useBatch: false        # individual prepared statements for token-aware routing
+  ackMode: after_write   # or immediate for higher throughput if writes are idempotent
+  writeTimestamp: none
   collectionTableMapping:
     - collection: example_collection
       tableName: example_table
@@ -88,22 +128,23 @@ Check out on [go-dcp](https://github.com/Trendyol/go-dcp#configuration)
 
 ### Cassandra Specific Configuration
 
-| Variable                                                | Type                     | Required | Default | Description                                                                                        |                                                           
-|---------------------------------------------------------|--------------------------|----------|---------|----------------------------------------------------------------------------------------------------|
-| `cassandra.hosts`                                       | []string                 | yes      |         | Cassandra connection hosts                                                                         |
-| `cassandra.username`                                    | string                   | yes      |         | Cassandra username                                                                                 |
-| `cassandra.password`                                    | string                   | yes      |         | Cassandra password                                                                                 |
-| `cassandra.keyspace`                                    | string                   | yes      |         | Cassandra keyspace name                                                                            |
-| `cassandra.timeout`                                     | time.Duration            | no       | 10s     | Cassandra query timeout                                                                            |
-| `cassandra.batchSize`                                   | int                      | no       | 100     | Batch size for bulk operations                                                                     |
-| `cassandra.batchTimeout`                                | time.Duration            | no       | 2s      | Batch timeout duration                                                                             |
-| `cassandra.batchSizeLimit`                              | int                      | no       | 1000    | Maximum number of records in a batch                                                              |
-| `cassandra.batchTickerDuration`                         | time.Duration            | no       | 5s      | Batch is being flushed automatically at specific time intervals for long waiting messages in batch |
-| `cassandra.batchByteSizeLimit`                          | int                      | no       | 10485760| Maximum byte size of a batch                                                                       |
-| `cassandra.workerCount`                                 | int                      | no       | 4       | Number of parallel workers                                                                         |
-| `cassandra.tableName`                                   | string                   | no       |         | Target table name (used when no collection mapping is configured)                                  |
-| `cassandra.consistency`                                 | string                   | no       | QUORUM  | Cassandra consistency level                                                                        |
-| `cassandra.collectionTableMapping`                      | []CollectionTableMapping | no       |         | Will be used for default mapper. Please read the next topic.                                       |
+| Variable                          | Type                     | Required | Default      | Description                                                                                                                              |
+|-----------------------------------|--------------------------|----------|--------------|------------------------------------------------------------------------------------------------------------------------------------------|
+| `cassandra.hosts`                 | []string                 | yes      |              | Cassandra connection hosts                                                                                                               |
+| `cassandra.username`              | string                   | yes      |              | Cassandra username                                                                                                                       |
+| `cassandra.password`              | string                   | yes      |              | Cassandra password                                                                                                                       |
+| `cassandra.keyspace`              | string                   | yes      |              | Cassandra keyspace name                                                                                                                  |
+| `cassandra.timeout`               | time.Duration            | no       | 10s          | Cassandra query timeout                                                                                                                  |
+| `cassandra.workerCount`           | int                      | no       | 1            | Number of concurrent workers writing to Cassandra. Set to the number of Cassandra nodes for best throughput                              |
+| `cassandra.workerQueueSize`       | int                      | no       | workerCount×4 | Job queue depth. A larger value keeps workers busy during write latency spikes. Defaults to 4× workerCount                              |
+| `cassandra.useBatch`              | bool                     | no       | false        | When the mapper returns multiple rows per event, group them into a single CQL batch statement. Has no effect when the mapper returns one row per event. Batches lose token-aware routing — all rows go to one coordinator |
+| `cassandra.batchType`             | string                   | no       | logged       | CQL batch type when `useBatch` is true: `logged`, `unlogged`, or `counter`. `unlogged` is faster but not atomic across partitions       |
+| `cassandra.ackMode`               | string                   | no       | after_write  | When to acknowledge DCP events: `immediate` (before write, higher throughput) or `after_write` (after write, stronger durability)        |
+| `cassandra.writeTimestamp`        | string                   | no       | none         | Populate `USING TIMESTAMP` on writes: `none`, `event_time` (DCP event time in µs), or `now` (wall clock at write time in µs)            |
+| `cassandra.hostSelectionPolicy`   | string                   | no       | token_aware  | Host selection policy: `token_aware` (default) or `round_robin`                                                                         |
+| `cassandra.consistency`           | string                   | no       | QUORUM       | Cassandra consistency level                                                                                                              |
+| `cassandra.tableName`             | string                   | no       |              | Target table name (used when no collection mapping is configured)                                                                        |
+| `cassandra.collectionTableMapping`| []CollectionTableMapping | no       |              | Used by the default mapper. See next section                                                                                             |
 
 ### Collection Table Mapping Configuration
 

@@ -55,9 +55,63 @@ func TestCassandra_SetDefaults_BatchConfig(t *testing.T) {
 	cassandra := Cassandra{}
 	cassandra.setDefaults()
 
-	// Test batch defaults
 	assert.Equal(t, "logged", cassandra.BatchType)
 	assert.Equal(t, 65536, cassandra.MaxBatchSize)
+}
+
+func TestCassandra_SetDefaults_AckMode(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "after_write"},
+		{"invalid", "after_write"},
+		{"immediate", "immediate"},
+		{"after_write", "after_write"},
+		{"  IMMEDIATE  ", "immediate"},
+	}
+	for _, tt := range tests {
+		c := Cassandra{AckMode: tt.input}
+		c.setDefaults()
+		assert.Equal(t, tt.expected, c.AckMode, "input: %q", tt.input)
+	}
+}
+
+func TestCassandra_SetDefaults_WriteTimestamp(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "none"},
+		{"invalid", "none"},
+		{"none", "none"},
+		{"event_time", "event_time"},
+		{"now", "now"},
+		{"  NOW  ", "now"},
+	}
+	for _, tt := range tests {
+		c := Cassandra{WriteTimestamp: tt.input}
+		c.setDefaults()
+		assert.Equal(t, tt.expected, c.WriteTimestamp, "input: %q", tt.input)
+	}
+}
+
+func TestCassandra_SetDefaults_HostSelectionPolicy(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "token_aware"},
+		{"invalid", "token_aware"},
+		{"token_aware", "token_aware"},
+		{"round_robin", "round_robin"},
+		{"  ROUND_ROBIN  ", "round_robin"},
+	}
+	for _, tt := range tests {
+		c := Cassandra{HostSelectionPolicy: tt.input}
+		c.setDefaults()
+		assert.Equal(t, tt.expected, c.HostSelectionPolicy, "input: %q", tt.input)
+	}
 }
 
 func TestCassandra_SetDefaults_ConnectionPooling(t *testing.T) {

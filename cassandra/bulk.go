@@ -16,36 +16,34 @@ import (
 
 type Bulk struct {
 	session             Session
-	jobCh               chan []BatchItem
+	jobQueue            chan []BatchItem
 	dcpCheckpointCommit func()
-	batchTicker         *time.Ticker
 	preparedStmts       map[string]string
-	batchKeys           map[string]int
 	metric              *Metric
 	shutdownCh          chan struct{}
 	keyspace            string
-	batch               []BatchItem
-	contexts            []*models.ListenerContext
 	wg                  sync.WaitGroup
-	batchByteSizeLimit  int
-	workerCount         int
-	batchByteSize       int
-	batchSize           int
-	batchIndex          int
-	batchSizeLimit      int
+	preparedStmtsMutex  sync.RWMutex
 	batchType           BatchType
 	maxBatchSize        int
-	preparedStmtsMutex  sync.RWMutex
-	flushLock           sync.Mutex
 	isDcpRebalancing    int32
 	useBatch            bool
+	ackMode             string
+	writeTimestamp      string
 }
 
 type BatchItem struct {
 	Model Model
-	Done  chan struct{}
-	Size  int
+	Ack   func()
 }
+
+const (
+	ackModeImmediate        = "immediate"
+	ackModeAfterWrite       = "after_write"
+	writeTimestampNone      = "none"
+	writeTimestampEventTime = "event_time"
+	writeTimestampNow       = "now"
+)
 
 type Mapper func(event interface{}) []Model
 
@@ -63,115 +61,123 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 	if err != nil {
 		return nil, err
 	}
-	workerCount := 1
-	batchSizeLimit := cfg.Cassandra.BatchSizeLimit
-	if batchSizeLimit <= 0 {
-		batchSizeLimit = 1000
-	}
-	batchByteSizeLimit := cfg.Cassandra.BatchByteSizeLimit
-	if batchByteSizeLimit <= 0 {
-		batchByteSizeLimit = 10485760
-	}
 
-	channelBufferSize := workerCount
+	workerCount := cfg.Cassandra.WorkerCount
+	if workerCount <= 0 {
+		workerCount = 1
+	}
 
 	b := &Bulk{
 		session:             realSession,
 		keyspace:            cfg.Cassandra.Keyspace,
 		dcpCheckpointCommit: dcpCheckpointCommit,
-		batchTicker:         time.NewTicker(cfg.Cassandra.BatchTickerDuration),
-		batchSizeLimit:      batchSizeLimit,
-		batchByteSizeLimit:  batchByteSizeLimit,
-		batch:               make([]BatchItem, 0, batchSizeLimit),
-		batchKeys:           make(map[string]int, batchSizeLimit),
-		workerCount:         workerCount,
-		jobCh:               make(chan []BatchItem, channelBufferSize),
+		jobQueue:            make(chan []BatchItem, cfg.Cassandra.WorkerQueueSize),
 		shutdownCh:          make(chan struct{}),
 		metric:              &Metric{},
 		preparedStmts:       make(map[string]string),
-		preparedStmtsMutex:  sync.RWMutex{},
 		useBatch:            cfg.Cassandra.UseBatch,
 		batchType:           getBatchType(cfg.Cassandra.BatchType),
 		maxBatchSize:        cfg.Cassandra.MaxBatchSize,
+		ackMode:             cfg.Cassandra.AckMode,
+		writeTimestamp:      cfg.Cassandra.WriteTimestamp,
 	}
-	return b, nil
-}
 
-func (b *Bulk) StartBulk() {
-	for i := 0; i < b.workerCount; i++ {
+	for i := 0; i < workerCount; i++ {
 		b.wg.Add(1)
 		go b.worker()
 	}
 
-	for {
-		select {
-		case <-b.batchTicker.C:
-			b.flushMessages()
-		case <-b.shutdownCh:
-			b.flushMessages()
-			close(b.jobCh)
-			b.wg.Wait()
-			return
-		}
-	}
+	return b, nil
 }
 
 func (b *Bulk) worker() {
 	defer b.wg.Done()
-	for batch := range b.jobCh {
-		if batch == nil {
+	for batch := range b.jobQueue {
+		if batch != nil {
+			b.processBatch(batch)
+		}
+	}
+}
+
+// StartBulk blocks until Close is called. With no buffer or ticker,
+// this simply waits for the shutdown signal and drains the worker pool.
+func (b *Bulk) StartBulk() {
+	<-b.shutdownCh
+	close(b.jobQueue)
+	b.wg.Wait()
+}
+
+func (b *Bulk) Close() {
+	close(b.shutdownCh)
+	b.session.Close()
+}
+
+func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, actions []Model) {
+	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
+		log.Printf("could not add new message to batch while rebalancing")
+		return
+	}
+
+	b.metric.ProcessLatencyMs = time.Since(eventTime).Milliseconds()
+
+	if len(actions) == 0 {
+		if b.ackMode == ackModeImmediate {
+			ctx.Ack()
+		}
+		return
+	}
+
+	var ackFn func()
+	if b.ackMode == ackModeAfterWrite {
+		var once sync.Once
+		ackFn = func() { once.Do(ctx.Ack) }
+	} else {
+		ctx.Ack()
+	}
+
+	timestamp := b.resolveTimestamp(eventTime)
+	if timestamp != 0 {
+		for _, action := range actions {
+			if raw, ok := action.(*Raw); ok {
+				raw.Timestamp = timestamp
+			}
+		}
+	}
+
+	batch := make([]BatchItem, 0, len(actions))
+	for _, action := range actions {
+		if action == nil {
 			continue
 		}
-		b.processBatch(batch)
+		batch = append(batch, BatchItem{Model: action, Ack: ackFn})
 	}
-}
 
-func (b *Bulk) request(item BatchItem, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	if item.Model == nil {
+	if len(batch) == 0 {
+		if ackFn != nil {
+			ackFn()
+		}
 		return
 	}
 
-	rawModel, ok := item.Model.(*Raw)
-	if !ok {
-		return
-	}
+	// Blocks when jobQueue is full, backpressuring the DCP dispatch goroutine.
+	b.jobQueue <- batch
+}
 
-	var err error
-
-	switch rawModel.Operation {
-	case Insert, Upsert:
-		err = b.insert(rawModel)
-	case Update:
-		err = b.update(rawModel)
-	case Delete:
-		err = b.delete(rawModel)
-	}
-	if err != nil {
-		panic(fmt.Sprintf("Cassandra %s failed on table %s: %v", rawModel.Operation, rawModel.Table, err))
+func (b *Bulk) resolveTimestamp(eventTime time.Time) int64 {
+	switch b.writeTimestamp {
+	case writeTimestampEventTime:
+		return eventTime.UnixMicro()
+	case writeTimestampNow:
+		return time.Now().UnixMicro()
+	default:
+		return 0
 	}
 }
 
-//nolint:funlen
 func (b *Bulk) processBatch(batch []BatchItem) {
-	var doneChannel chan struct{}
-	if len(batch) > 0 {
-		doneChannel = batch[0].Done
-	}
-
 	defer func() {
 		if r := recover(); r != nil {
-			if doneChannel != nil {
-				select {
-				case <-doneChannel:
-				default:
-					close(doneChannel)
-				}
-			}
 			panic(r)
-		} else if doneChannel != nil {
-			close(doneChannel)
 		}
 	}()
 
@@ -184,129 +190,43 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 			panic(fmt.Sprintf("Cassandra batch write failed: %v", err))
 		}
 	} else {
-		var wg sync.WaitGroup
-		wg.Add(len(batch))
-
 		for _, item := range batch {
-			go b.request(item, &wg)
-		}
-
-		wg.Wait()
-	}
-
-	b.metric.BulkRequestSize = int64(b.batchSize)
-	b.metric.BulkRequestByteSize = int64(b.batchByteSize)
-	b.metric.BulkRequestProcessLatencyMs = time.Since(startedTime).Milliseconds()
-}
-
-func (b *Bulk) Close() {
-	close(b.shutdownCh)
-	b.session.Close()
-}
-
-func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, actions []Model) {
-	b.flushLock.Lock()
-	defer b.flushLock.Unlock()
-
-	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
-		log.Printf("could not add new message to batch while rebalancing")
-		return
-	}
-
-	b.metric.ProcessLatencyMs = time.Since(eventTime).Milliseconds()
-
-	if len(b.batch)+len(actions) > cap(b.batch) {
-		newCapacity := cap(b.batch) * 2
-		if newCapacity < len(b.batch)+len(actions) {
-			newCapacity = len(b.batch) + len(actions)
-		}
-		newBatch := make([]BatchItem, len(b.batch), newCapacity)
-		copy(newBatch, b.batch)
-		b.batch = newBatch
-	}
-
-	for _, action := range actions {
-		if action == nil {
-			continue
-		}
-		size := 1
-		key := b.getActionKey(action)
-		var itemSize int
-		if raw, ok := action.(*Raw); ok && raw.Document != nil {
-			for k, v := range raw.Document {
-				itemSize += len(k)
-				if s, ok := v.(string); ok {
-					itemSize += len(s)
-				} else {
-					itemSize += 8
-				}
-			}
-		}
-
-		if batchIndex, ok := b.batchKeys[key]; ok {
-			b.batch[batchIndex] = BatchItem{
-				Model: action,
-				Size:  size,
-			}
-		} else {
-			b.batch = append(b.batch, BatchItem{
-				Model: action,
-				Size:  size,
-			})
-			b.batchKeys[key] = b.batchIndex
-			b.batchIndex++
-			b.batchSize++
-			b.batchByteSize += itemSize
+			b.requestSync(item)
 		}
 	}
 
-	b.contexts = append(b.contexts, ctx)
-
-	if b.batchSize >= b.batchSizeLimit || b.batchByteSize >= b.batchByteSizeLimit {
-		b.flushMessagesLocked()
-	}
-}
-
-func (b *Bulk) flushMessages() {
-	b.flushLock.Lock()
-	defer b.flushLock.Unlock()
-	b.flushMessagesLocked()
-}
-
-func (b *Bulk) flushMessagesLocked() {
-	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
-		return
-	}
-
-	contexts := b.contexts
-	b.contexts = nil
-
-	if len(b.batch) == 0 {
-		for _, ctx := range contexts {
-			ctx.Ack()
+	for _, item := range batch {
+		if item.Ack != nil {
+			item.Ack()
 		}
-		return
-	}
-
-	done := make(chan struct{})
-	batchCopy := make([]BatchItem, len(b.batch))
-	copy(batchCopy, b.batch)
-	for i := range batchCopy {
-		batchCopy[i].Done = done
-	}
-	b.jobCh <- batchCopy
-	<-done
-	b.batch = b.batch[:0]
-	b.batchKeys = make(map[string]int, b.batchSizeLimit)
-	b.batchIndex = 0
-	b.batchSize = 0
-	b.batchByteSize = 0
-
-	for _, ctx := range contexts {
-		ctx.Ack()
 	}
 
 	b.dcpCheckpointCommit()
+	b.metric.BulkRequestProcessLatencyMs = time.Since(startedTime).Milliseconds()
+}
+
+func (b *Bulk) requestSync(item BatchItem) {
+	if item.Model == nil {
+		return
+	}
+
+	rawModel, ok := item.Model.(*Raw)
+	if !ok {
+		return
+	}
+
+	var err error
+	switch rawModel.Operation {
+	case Insert, Upsert:
+		err = b.insert(rawModel)
+	case Update:
+		err = b.update(rawModel)
+	case Delete:
+		err = b.delete(rawModel)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("Cassandra %s failed on table %s: %v", rawModel.Operation, rawModel.Table, err))
+	}
 }
 
 func (b *Bulk) insert(raw *Raw) error {
@@ -333,42 +253,6 @@ func (b *Bulk) delete(raw *Raw) error {
 	return b.session.PreparedQuery(query, values...).Exec()
 }
 
-func (b *Bulk) getActionKey(model Model) string {
-	rawModel, ok := model.(*Raw)
-	if !ok {
-		return fmt.Sprintf("batch:%d", b.batchIndex)
-	}
-
-	var source map[string]interface{}
-
-	if len(rawModel.RowKey) > 0 {
-		source = rawModel.RowKey
-	} else {
-		switch rawModel.Operation {
-		case Update, Delete:
-			source = rawModel.Filter
-		case Insert, Upsert:
-			source = rawModel.Document
-		}
-	}
-
-	if len(source) == 0 {
-		return fmt.Sprintf("batch:%d", b.batchIndex)
-	}
-
-	keys := make([]string, 0, len(source))
-	for k := range source {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	key := rawModel.Table + ":"
-	for _, k := range keys {
-		key += fmt.Sprintf("%s=%v;", k, source[k])
-	}
-	return key
-}
-
 func join(arr []string, sep string) string {
 	result := ""
 	for i, s := range arr {
@@ -381,16 +265,10 @@ func join(arr []string, sep string) string {
 }
 
 func (b *Bulk) PrepareStartRebalancing() {
-	b.flushLock.Lock()
-	defer b.flushLock.Unlock()
-
 	atomic.StoreInt32(&b.isDcpRebalancing, 1)
 }
 
 func (b *Bulk) PrepareEndRebalancing() {
-	b.flushLock.Lock()
-	defer b.flushLock.Unlock()
-
 	atomic.StoreInt32(&b.isDcpRebalancing, 0)
 }
 
@@ -543,7 +421,6 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 
 func (b *Bulk) buildQueryAndValues(raw *Raw) (string, []interface{}) {
 	hasTS := raw.Timestamp > 0
-
 	switch raw.Operation {
 	case Insert, Upsert:
 		return b.buildInsertValues(raw, hasTS)

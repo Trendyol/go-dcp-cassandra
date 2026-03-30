@@ -19,7 +19,6 @@ type Cassandra struct {
 	Keyspace          string `yaml:"keyspace"`
 	Compressor        string `yaml:"compressor"`
 	SerialConsistency string `yaml:"serialConsistency"`
-	BatchType         string `yaml:"batchType"`
 	Consistency       string `yaml:"consistency"`
 	TableName         string `yaml:"tableName"`
 	SSL               struct {
@@ -36,21 +35,21 @@ type Cassandra struct {
 		MinRetryDelay time.Duration `yaml:"minRetryDelay"`
 		MaxRetryDelay time.Duration `yaml:"maxRetryDelay"`
 	} `yaml:"retryPolicy"`
-	BatchTimeout        time.Duration `yaml:"batchTimeout"`
 	KeepAlive           time.Duration `yaml:"keepAlive"`
-	BatchByteSizeLimit  int           `yaml:"batchByteSizeLimit"`
 	Timeout             time.Duration `yaml:"timeout"`
-	MaxBatchSize        int           `yaml:"maxBatchSize"`
-	NumConns            int           `yaml:"numConns"`
 	ConnectTimeout      time.Duration `yaml:"connectTimeout"`
 	WorkerCount         int           `yaml:"workerCount"`
+	WorkerQueueSize     int           `yaml:"workerQueueSize"`
+	MaxBatchSize        int           `yaml:"maxBatchSize"`
+	NumConns            int           `yaml:"numConns"`
 	MaxPreparedStmts    int           `yaml:"maxPreparedStmts"`
 	MaxRoutingKeyInfo   int           `yaml:"maxRoutingKeyInfo"`
 	PageSize            int           `yaml:"pageSize"`
-	BatchTickerDuration time.Duration `yaml:"batchTickerDuration"`
-	BatchSizeLimit      int           `yaml:"batchSizeLimit"`
-	BatchSize           int           `yaml:"batchSize"`
 	UseBatch            bool          `yaml:"useBatch"`
+	BatchType           string        `yaml:"batchType"`
+	HostSelectionPolicy string        `yaml:"hostSelectionPolicy"`
+	AckMode             string        `yaml:"ackMode"`
+	WriteTimestamp      string        `yaml:"writeTimestamp"`
 }
 
 type Connector struct {
@@ -83,6 +82,30 @@ func (c *Cassandra) setDefaults() {
 	}
 	if c.MaxBatchSize <= 0 {
 		c.MaxBatchSize = 65536
+	}
+	if c.WorkerQueueSize <= 0 {
+		c.WorkerQueueSize = c.WorkerCount * 4
+	}
+
+	hostSelectionPolicy := strings.TrimSpace(strings.ToLower(c.HostSelectionPolicy))
+	if hostSelectionPolicy != "round_robin" && hostSelectionPolicy != "token_aware" {
+		c.HostSelectionPolicy = "token_aware"
+	} else {
+		c.HostSelectionPolicy = hostSelectionPolicy
+	}
+
+	ackMode := strings.TrimSpace(strings.ToLower(c.AckMode))
+	if ackMode != "immediate" && ackMode != "after_write" {
+		c.AckMode = "after_write"
+	} else {
+		c.AckMode = ackMode
+	}
+
+	writeTimestamp := strings.TrimSpace(strings.ToLower(c.WriteTimestamp))
+	if writeTimestamp != "none" && writeTimestamp != "event_time" && writeTimestamp != "now" {
+		c.WriteTimestamp = "none"
+	} else {
+		c.WriteTimestamp = writeTimestamp
 	}
 
 	if c.NumConns <= 0 {
