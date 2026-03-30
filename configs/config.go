@@ -30,6 +30,7 @@ type Cassandra struct {
 	MaxPreparedStmts    int           `yaml:"maxPreparedStmts"`
 	MaxRoutingKeyInfo   int           `yaml:"maxRoutingKeyInfo"`
 	WorkerCount         int           `yaml:"workerCount"`
+	EventQueueSize      int           `yaml:"eventQueueSize"`
 	UseBatch            bool          `yaml:"useBatch"`
 	BatchType           string        `yaml:"batchType"`
 	BatchScope          string        `yaml:"batchScope"`
@@ -137,6 +138,10 @@ func (c *Cassandra) setBatchDefaults() {
 
 	if c.MaxBatchSize <= 0 {
 		c.MaxBatchSize = 65536
+	}
+
+	if c.EventQueueSize <= 0 {
+		c.EventQueueSize = 128
 	}
 }
 

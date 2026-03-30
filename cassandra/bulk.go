@@ -14,24 +14,33 @@ import (
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
 )
 
+// lane holds all mutable state that is local to a single worker lane.
+// Because every vbucket is pinned to exactly one lane (vbID % len(lanes)),
+// the lane's flushLock only ever has to serialize events within that lane,
+// not across the whole connector.  Different lanes run entirely independently
+// and in parallel.
+type lane struct {
+	queue         chan []BatchItem
+	flushLock     sync.Mutex
+	batch         []BatchItem
+	batchKeys     map[string]int
+	batchTicker   *time.Ticker
+	shutdownCh    chan struct{}
+	batchIndex    int
+	batchSize     int
+	batchByteSize int
+}
+
 type Bulk struct {
 	session             Session
-	jobCh               chan []BatchItem
-	workerQueues        []chan []BatchItem
 	dcpCheckpointCommit func()
-	batchTicker         *time.Ticker
+	lanes               []*lane
 	preparedStmts       map[string]string
-	batchKeys           map[string]int
 	metric              *Metric
 	shutdownCh          chan struct{}
 	keyspace            string
-	batch               []BatchItem
 	wg                  sync.WaitGroup
 	batchByteSizeLimit  int
-	workerCount         int
-	batchByteSize       int
-	batchSize           int
-	batchIndex          int
 	batchSizeLimit      int
 	batchType           BatchType
 	maxBatchSize        int
@@ -39,7 +48,6 @@ type Bulk struct {
 	ackMode             string
 	writeTimestamp      string
 	preparedStmtsMutex  sync.RWMutex
-	flushLock           sync.Mutex
 	isDcpRebalancing    int32
 	useBatch            bool
 }
@@ -51,6 +59,7 @@ type BatchItem struct {
 	Size            int
 	TimestampMicros *int64
 	VbID            uint16
+	IsEventScoped   bool
 }
 
 const (
@@ -74,6 +83,16 @@ type Metric struct {
 	BulkRequestByteSize         int64
 }
 
+func newLane(batchSizeLimit int, tickerDuration time.Duration, eventQueueSize int) *lane {
+	return &lane{
+		queue:       make(chan []BatchItem, eventQueueSize),
+		batch:       make([]BatchItem, 0, batchSizeLimit),
+		batchKeys:   make(map[string]int, batchSizeLimit),
+		batchTicker: time.NewTicker(tickerDuration),
+		shutdownCh:  make(chan struct{}),
+	}
+}
+
 func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 	realSession, err := NewCassandraSession(cfg.Cassandra)
 	if err != nil {
@@ -92,24 +111,18 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 		batchByteSizeLimit = 10485760
 	}
 
-	channelBufferSize := workerCount
-	workerQueues := make([]chan []BatchItem, workerCount)
-	for i := range workerQueues {
-		workerQueues[i] = make(chan []BatchItem, channelBufferSize)
+	lanes := make([]*lane, workerCount)
+	for i := range lanes {
+		lanes[i] = newLane(batchSizeLimit, cfg.Cassandra.BatchTickerDuration, cfg.Cassandra.EventQueueSize)
 	}
 
 	b := &Bulk{
 		session:             realSession,
 		keyspace:            cfg.Cassandra.Keyspace,
 		dcpCheckpointCommit: dcpCheckpointCommit,
-		batchTicker:         time.NewTicker(cfg.Cassandra.BatchTickerDuration),
+		lanes:               lanes,
 		batchSizeLimit:      batchSizeLimit,
 		batchByteSizeLimit:  batchByteSizeLimit,
-		batch:               make([]BatchItem, 0, batchSizeLimit),
-		batchKeys:           make(map[string]int, batchSizeLimit),
-		workerCount:         workerCount,
-		workerQueues:        workerQueues,
-		jobCh:               workerQueues[0],
 		shutdownCh:          make(chan struct{}),
 		metric:              &Metric{},
 		preparedStmts:       make(map[string]string),
@@ -124,38 +137,266 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 	return b, nil
 }
 
-func (b *Bulk) StartBulk() {
-	for i := 0; i < len(b.workerQueues); i++ {
-		b.wg.Add(1)
-		go b.workerOnQueue(b.workerQueues[i])
-	}
+// laneFor returns the lane responsible for the given vbucket.
+func (b *Bulk) laneFor(vbID uint16) *lane {
+	return b.lanes[int(vbID)%len(b.lanes)]
+}
 
+func (b *Bulk) StartBulk() {
+	for _, l := range b.lanes {
+		b.wg.Add(1)
+		go b.runLane(l)
+	}
+	<-b.shutdownCh
+	b.wg.Wait()
+}
+
+// runLane owns the ticker-driven flush loop and the worker loop for one lane.
+// Both are multiplexed in a single goroutine so the lane's batch buffer is only
+// ever touched by this goroutine (or by AddActions under the lane's flushLock).
+func (b *Bulk) runLane(l *lane) {
+	defer b.wg.Done()
 	for {
 		select {
-		case <-b.batchTicker.C:
-			b.flushMessages()
-		case <-b.shutdownCh:
-			b.flushMessages()
-			for _, q := range b.workerQueues {
-				close(q)
+		case <-l.batchTicker.C:
+			l.flushLock.Lock()
+			b.flushLaneLocked(l)
+			l.flushLock.Unlock()
+
+		case batch, ok := <-l.queue:
+			if !ok {
+				// queue closed — drain remaining ticker ticks then return
+				l.batchTicker.Stop()
+				return
 			}
-			b.wg.Wait()
+			if batch != nil {
+				b.processBatch(batch)
+			}
+
+		case <-l.shutdownCh:
+			l.batchTicker.Stop()
+			// Flush any buffered global-scope items before closing
+			l.flushLock.Lock()
+			b.flushLaneLocked(l)
+			l.flushLock.Unlock()
+			close(l.queue)
+			// Drain remaining queued batches
+			for batch := range l.queue {
+				if batch != nil {
+					b.processBatch(batch)
+				}
+			}
 			return
 		}
 	}
 }
 
-func (b *Bulk) worker() {
-	b.workerOnQueue(b.jobCh)
+func (b *Bulk) Close() {
+	close(b.shutdownCh)
+	for _, l := range b.lanes {
+		close(l.shutdownCh)
+	}
+	b.wg.Wait()
+	b.session.Close()
 }
 
-func (b *Bulk) workerOnQueue(queue <-chan []BatchItem) {
-	defer b.wg.Done()
-	for batch := range queue {
-		if batch == nil {
+func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, vbID uint16, actions []Model) {
+	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
+		log.Printf("could not add new message to batch while rebalancing")
+		return
+	}
+
+	b.metric.ProcessLatencyMs = time.Since(eventTime).Milliseconds()
+
+	if len(actions) == 0 {
+		if b.ackMode == ackModeImmediate {
+			ctx.Ack()
+		}
+		return
+	}
+
+	ackFn := b.createAckFunc(ctx)
+	timestampMicros := b.resolveTimestampMicros(eventTime)
+	l := b.laneFor(vbID)
+
+	if b.batchScope == batchScopeEvent {
+		// Event scope: enqueue directly to the lane's worker queue and block
+		// until the write completes.  No lane lock is held during the wait,
+		// so other vbuckets routed to different lanes proceed concurrently.
+		b.processEventScopedActions(l, actions, ackFn, timestampMicros, vbID)
+		return
+	}
+
+	// Global scope: buffer within the lane; only the lane's own lock is held.
+	l.flushLock.Lock()
+	b.ensureLaneBatchCapacity(l, len(actions))
+	b.addLaneActions(l, actions, ackFn, timestampMicros, vbID)
+	if l.batchSize >= b.batchSizeLimit || l.batchByteSize >= b.batchByteSizeLimit {
+		b.flushLaneLocked(l)
+	}
+	l.flushLock.Unlock()
+}
+
+func (b *Bulk) createAckFunc(ctx *models.ListenerContext) func() {
+	if b.ackMode == ackModeImmediate {
+		ctx.Ack()
+		return nil
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(ctx.Ack)
+	}
+}
+
+func (b *Bulk) resolveTimestampMicros(eventTime time.Time) *int64 {
+	if b.writeTimestamp == writeTimestampNone {
+		return nil
+	}
+
+	var ts int64
+	if b.writeTimestamp == writeTimestampNow {
+		ts = time.Now().UnixMicro()
+	} else {
+		ts = eventTime.UnixMicro()
+	}
+	return &ts
+}
+
+// processEventScopedActions enqueues one batch per DCP event into the lane's
+// queue and returns immediately (fire and forget).  The lane's worker goroutine
+// will call ack and dcpCheckpointCommit after the write completes.
+// Backpressure is provided by the bounded lane queue: when it is full this
+// call blocks until the worker drains an entry, naturally throttling the
+// upstream DCP dispatch goroutine.
+func (b *Bulk) processEventScopedActions(l *lane, actions []Model, ackFn func(), timestampMicros *int64, vbID uint16) {
+	eventBatch := make([]BatchItem, 0, len(actions))
+	for _, action := range actions {
+		if action == nil {
 			continue
 		}
-		b.processBatch(batch)
+		eventBatch = append(eventBatch, BatchItem{
+			Model:           action,
+			Size:            1,
+			Acks:            []func(){ackFn},
+			TimestampMicros: timestampMicros,
+			VbID:            vbID,
+			IsEventScoped:   true,
+		})
+	}
+
+	if len(eventBatch) == 0 {
+		if ackFn != nil {
+			ackFn()
+		}
+		return
+	}
+
+	l.queue <- eventBatch
+}
+
+func (b *Bulk) ensureLaneBatchCapacity(l *lane, actionCount int) {
+	if len(l.batch)+actionCount <= cap(l.batch) {
+		return
+	}
+
+	newCapacity := cap(l.batch) * 2
+	if newCapacity < len(l.batch)+actionCount {
+		newCapacity = len(l.batch) + actionCount
+	}
+	newBatch := make([]BatchItem, len(l.batch), newCapacity)
+	copy(newBatch, l.batch)
+	l.batch = newBatch
+}
+
+func (b *Bulk) addLaneActions(l *lane, actions []Model, ackFn func(), timestampMicros *int64, vbID uint16) {
+	for _, action := range actions {
+		if action == nil {
+			continue
+		}
+		key := b.getActionKey(l, action)
+		itemSize := calcItemSize(action)
+
+		if batchIndex, ok := l.batchKeys[key]; ok {
+			current := l.batch[batchIndex]
+			current.Model = action
+			current.Size = 1
+			if ackFn != nil {
+				current.Acks = append(current.Acks, ackFn)
+			}
+			current.TimestampMicros = timestampMicros
+			current.VbID = vbID
+			l.batch[batchIndex] = current
+			continue
+		}
+
+		l.batch = append(l.batch, BatchItem{
+			Model:           action,
+			Size:            1,
+			Acks:            []func(){ackFn},
+			TimestampMicros: timestampMicros,
+			VbID:            vbID,
+		})
+		l.batchKeys[key] = l.batchIndex
+		l.batchIndex++
+		l.batchSize++
+		l.batchByteSize += itemSize
+	}
+}
+
+// flushLaneLocked drains the lane's buffer into per-vbucket sub-batches and
+// dispatches them to the lane's worker queue.  Must be called with l.flushLock
+// held.
+func (b *Bulk) flushLaneLocked(l *lane) {
+	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
+		return
+	}
+	if len(l.batch) == 0 {
+		return
+	}
+
+	batchCopy := make([]BatchItem, len(l.batch))
+	copy(batchCopy, l.batch)
+	l.batch = l.batch[:0]
+	l.batchKeys = make(map[string]int, b.batchSizeLimit)
+	l.batchIndex = 0
+	l.batchSize = 0
+	l.batchByteSize = 0
+
+	b.dispatchLaneBatchByVb(l, batchCopy)
+	b.dcpCheckpointCommit()
+}
+
+// dispatchLaneBatchByVb groups items by vbucket, sends each group to the lane
+// queue, and waits for all of them to complete before returning.
+func (b *Bulk) dispatchLaneBatchByVb(l *lane, items []BatchItem) {
+	if len(items) == 0 {
+		return
+	}
+
+	grouped := make(map[uint16][]BatchItem)
+	order := make([]uint16, 0)
+	for _, item := range items {
+		if _, exists := grouped[item.VbID]; !exists {
+			order = append(order, item.VbID)
+		}
+		grouped[item.VbID] = append(grouped[item.VbID], item)
+	}
+
+	dones := make([]chan struct{}, 0, len(order))
+	for _, vbID := range order {
+		group := make([]BatchItem, len(grouped[vbID]))
+		copy(group, grouped[vbID])
+		done := make(chan struct{})
+		for i := range group {
+			group[i].Done = done
+		}
+		dones = append(dones, done)
+		l.queue <- group
+	}
+
+	for _, done := range dones {
+		<-done
 	}
 }
 
@@ -227,6 +468,8 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 		wg.Wait()
 	}
 
+	isEventScoped := len(batch) > 0 && batch[0].IsEventScoped
+
 	for _, item := range batch {
 		for _, ack := range item.Acks {
 			if ack != nil {
@@ -235,219 +478,11 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 		}
 	}
 
-	b.metric.BulkRequestSize = int64(b.batchSize)
-	b.metric.BulkRequestByteSize = int64(b.batchByteSize)
-	b.metric.BulkRequestProcessLatencyMs = time.Since(startedTime).Milliseconds()
-}
-
-func (b *Bulk) Close() {
-	close(b.shutdownCh)
-	b.session.Close()
-}
-
-func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, vbID uint16, actions []Model) {
-	b.flushLock.Lock()
-	defer b.flushLock.Unlock()
-
-	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
-		log.Printf("could not add new message to batch while rebalancing")
-		return
-	}
-
-	b.metric.ProcessLatencyMs = time.Since(eventTime).Milliseconds()
-
-	if len(actions) == 0 {
-		if b.ackMode == ackModeImmediate {
-			ctx.Ack()
-		}
-		return
-	}
-
-	ackFn := b.createAckFunc(ctx)
-	timestampMicros := b.resolveTimestampMicros(eventTime)
-
-	if b.batchScope == batchScopeEvent {
-		b.processEventScopedActions(actions, ackFn, timestampMicros, vbID)
-		return
-	}
-
-	b.ensureBatchCapacity(len(actions))
-	b.addGlobalActions(actions, ackFn, timestampMicros, vbID)
-
-	if b.batchSize >= b.batchSizeLimit || b.batchByteSize >= b.batchByteSizeLimit {
-		b.flushMessagesLocked()
-	}
-}
-
-func (b *Bulk) createAckFunc(ctx *models.ListenerContext) func() {
-	if b.ackMode == ackModeImmediate {
-		ctx.Ack()
-		return nil
-	}
-
-	var once sync.Once
-	return func() {
-		once.Do(ctx.Ack)
-	}
-}
-
-func (b *Bulk) resolveTimestampMicros(eventTime time.Time) *int64 {
-	if b.writeTimestamp == writeTimestampNone {
-		return nil
-	}
-
-	var ts int64
-	if b.writeTimestamp == writeTimestampNow {
-		ts = time.Now().UnixMicro()
-	} else {
-		ts = eventTime.UnixMicro()
-	}
-	return &ts
-}
-
-func (b *Bulk) processEventScopedActions(actions []Model, ackFn func(), timestampMicros *int64, vbID uint16) {
-	eventBatch := make([]BatchItem, 0, len(actions))
-	for _, action := range actions {
-		if action == nil {
-			continue
-		}
-		eventBatch = append(eventBatch, BatchItem{
-			Model:           action,
-			Size:            1,
-			Acks:            []func(){ackFn},
-			TimestampMicros: timestampMicros,
-			VbID:            vbID,
-		})
-	}
-
-	if len(eventBatch) == 0 {
-		if ackFn != nil {
-			ackFn()
-		}
-		return
-	}
-
-	done := make(chan struct{})
-	for i := range eventBatch {
-		eventBatch[i].Done = done
-	}
-
-	b.enqueueBatch(vbID, eventBatch)
-	<-done
-	b.dcpCheckpointCommit()
-}
-
-func (b *Bulk) ensureBatchCapacity(actionCount int) {
-	if len(b.batch)+actionCount <= cap(b.batch) {
-		return
-	}
-
-	newCapacity := cap(b.batch) * 2
-	if newCapacity < len(b.batch)+actionCount {
-		newCapacity = len(b.batch) + actionCount
-	}
-	newBatch := make([]BatchItem, len(b.batch), newCapacity)
-	copy(newBatch, b.batch)
-	b.batch = newBatch
-}
-
-func (b *Bulk) addGlobalActions(actions []Model, ackFn func(), timestampMicros *int64, vbID uint16) {
-	for _, action := range actions {
-		if action == nil {
-			continue
-		}
-		key := b.getActionKey(action)
-		itemSize := calcItemSize(action)
-
-		if batchIndex, ok := b.batchKeys[key]; ok {
-			current := b.batch[batchIndex]
-			current.Model = action
-			current.Size = 1
-			if ackFn != nil {
-				current.Acks = append(current.Acks, ackFn)
-			}
-			current.TimestampMicros = timestampMicros
-			current.VbID = vbID
-			b.batch[batchIndex] = current
-			continue
-		}
-
-		b.batch = append(b.batch, BatchItem{
-			Model:           action,
-			Size:            1,
-			Acks:            []func(){ackFn},
-			TimestampMicros: timestampMicros,
-			VbID:            vbID,
-		})
-		b.batchKeys[key] = b.batchIndex
-		b.batchIndex++
-		b.batchSize++
-		b.batchByteSize += itemSize
-	}
-}
-
-func (b *Bulk) flushMessages() {
-	b.flushLock.Lock()
-	defer b.flushLock.Unlock()
-	b.flushMessagesLocked()
-}
-
-func (b *Bulk) flushMessagesLocked() {
-	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
-		return
-	}
-	if len(b.batch) > 0 {
-		batchCopy := make([]BatchItem, len(b.batch))
-		copy(batchCopy, b.batch)
-		b.dispatchBatchByVb(batchCopy)
-		b.batch = b.batch[:0]
-		b.batchKeys = make(map[string]int, b.batchSizeLimit)
-		b.batchIndex = 0
-		b.batchSize = 0
-		b.batchByteSize = 0
+	if isEventScoped {
 		b.dcpCheckpointCommit()
 	}
-}
 
-func (b *Bulk) dispatchBatchByVb(items []BatchItem) {
-	if len(items) == 0 {
-		return
-	}
-
-	groupped := make(map[uint16][]BatchItem)
-	order := make([]uint16, 0)
-	for _, item := range items {
-		if _, exists := groupped[item.VbID]; !exists {
-			order = append(order, item.VbID)
-		}
-		groupped[item.VbID] = append(groupped[item.VbID], item)
-	}
-
-	dones := make([]chan struct{}, 0, len(order))
-	for _, vbID := range order {
-		group := make([]BatchItem, len(groupped[vbID]))
-		copy(group, groupped[vbID])
-		done := make(chan struct{})
-		for i := range group {
-			group[i].Done = done
-		}
-		dones = append(dones, done)
-		b.enqueueBatch(vbID, group)
-	}
-
-	for _, done := range dones {
-		<-done
-	}
-}
-
-func (b *Bulk) enqueueBatch(vbID uint16, batch []BatchItem) {
-	if len(b.workerQueues) <= 1 {
-		b.jobCh <- batch
-		return
-	}
-
-	index := int(vbID) % len(b.workerQueues)
-	b.workerQueues[index] <- batch
+	b.metric.BulkRequestProcessLatencyMs = time.Since(startedTime).Milliseconds()
 }
 
 func (b *Bulk) insert(raw *Raw, timestampMicros *int64) error {
@@ -520,10 +555,10 @@ func (b *Bulk) delete(raw *Raw, timestampMicros *int64) error {
 	return b.session.PreparedQuery(query, values...).Exec()
 }
 
-func (b *Bulk) getActionKey(model Model) string {
+func (b *Bulk) getActionKey(l *lane, model Model) string {
 	rawModel, ok := model.(*Raw)
 	if !ok {
-		return fmt.Sprintf("batch:%d", b.batchIndex)
+		return fmt.Sprintf("batch:%d", l.batchIndex)
 	}
 
 	var source map[string]interface{}
@@ -535,7 +570,7 @@ func (b *Bulk) getActionKey(model Model) string {
 	}
 
 	if len(source) == 0 {
-		return fmt.Sprintf("batch:%d", b.batchIndex)
+		return fmt.Sprintf("batch:%d", l.batchIndex)
 	}
 
 	keys := make([]string, 0, len(source))
@@ -634,16 +669,18 @@ func calcItemSize(action Model) int {
 }
 
 func (b *Bulk) PrepareStartRebalancing() {
-	b.flushLock.Lock()
-	defer b.flushLock.Unlock()
-
 	atomic.StoreInt32(&b.isDcpRebalancing, 1)
+	// Acquire all lane locks to ensure any in-progress flush completes before
+	// we return, and to drain any pending buffered batches.
+	for _, l := range b.lanes {
+		l.flushLock.Lock()
+	}
+	for _, l := range b.lanes {
+		l.flushLock.Unlock()
+	}
 }
 
 func (b *Bulk) PrepareEndRebalancing() {
-	b.flushLock.Lock()
-	defer b.flushLock.Unlock()
-
 	atomic.StoreInt32(&b.isDcpRebalancing, 0)
 }
 
