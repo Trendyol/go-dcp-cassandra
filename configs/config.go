@@ -47,9 +47,13 @@ type Cassandra struct {
 	PageSize            int           `yaml:"pageSize"`
 	UseBatch            bool          `yaml:"useBatch"`
 	BatchType           string        `yaml:"batchType"`
-	HostSelectionPolicy string        `yaml:"hostSelectionPolicy"`
-	AckMode             string        `yaml:"ackMode"`
-	WriteTimestamp      string        `yaml:"writeTimestamp"`
+	HostSelectionPolicy  string        `yaml:"hostSelectionPolicy"`
+	AckMode              string        `yaml:"ackMode"`
+	WriteTimestamp       string        `yaml:"writeTimestamp"`
+	BatchSizeLimit       int           `yaml:"batchSizeLimit"`
+	BatchByteSizeLimit   int           `yaml:"batchByteSizeLimit"`
+	BatchTickerDuration  time.Duration `yaml:"batchTickerDuration"`
+	MaxInflightPerWorker int           `yaml:"maxInflightPerWorker"`
 }
 
 type Connector struct {
@@ -131,6 +135,21 @@ func (c *Cassandra) setDefaults() {
 	}
 	if c.RetryPolicy.MaxRetryDelay <= 0 {
 		c.RetryPolicy.MaxRetryDelay = 1 * time.Second
+	}
+	if c.BatchSizeLimit <= 0 {
+		c.BatchSizeLimit = 2000
+	}
+	if c.BatchByteSizeLimit <= 0 {
+		c.BatchByteSizeLimit = 10 * 1024 * 1024 // 10MB
+	}
+	if c.BatchTickerDuration <= 0 {
+		c.BatchTickerDuration = 10 * time.Second
+	}
+	if c.MaxInflightPerWorker <= 0 {
+		c.MaxInflightPerWorker = 50
+	}
+	if c.WorkerQueueSize <= 0 {
+		c.WorkerQueueSize = c.WorkerCount * 4
 	}
 }
 

@@ -21,6 +21,7 @@ type Bulk struct {
 	preparedStmts       map[string]string
 	metric              *Metric
 	shutdownCh          chan struct{}
+	flushCh             chan struct{}
 	keyspace            string
 	wg                  sync.WaitGroup
 	preparedStmtsMutex  sync.RWMutex
@@ -30,6 +31,17 @@ type Bulk struct {
 	useBatch            bool
 	ackMode             string
 	writeTimestamp      string
+
+	// Batch accumulation fields
+	batchBuffer         []BatchItem
+	batchMutex          sync.Mutex
+	batchSizeLimit      int
+	batchByteSizeLimit  int
+	currentBatchSize    int
+	currentByteSize     int
+	batchTicker         *time.Ticker
+	batchTickerDuration time.Duration
+	maxInflightPerWorker int
 }
 
 type BatchItem struct {
@@ -67,19 +79,46 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 		workerCount = 1
 	}
 
+	batchSizeLimit := cfg.Cassandra.BatchSizeLimit
+	if batchSizeLimit <= 0 {
+		batchSizeLimit = 2000
+	}
+
+	batchByteSizeLimit := cfg.Cassandra.BatchByteSizeLimit
+	if batchByteSizeLimit <= 0 {
+		batchByteSizeLimit = 10 * 1024 * 1024 // 10MB
+	}
+
+	batchTickerDuration := cfg.Cassandra.BatchTickerDuration
+	if batchTickerDuration <= 0 {
+		batchTickerDuration = 10 * time.Second
+	}
+
+	maxInflightPerWorker := cfg.Cassandra.MaxInflightPerWorker
+	if maxInflightPerWorker <= 0 {
+		maxInflightPerWorker = 50
+	}
+
 	b := &Bulk{
-		session:             realSession,
-		keyspace:            cfg.Cassandra.Keyspace,
-		dcpCheckpointCommit: dcpCheckpointCommit,
-		jobQueue:            make(chan []BatchItem, cfg.Cassandra.WorkerQueueSize),
-		shutdownCh:          make(chan struct{}),
-		metric:              &Metric{},
-		preparedStmts:       make(map[string]string),
-		useBatch:            cfg.Cassandra.UseBatch,
-		batchType:           getBatchType(cfg.Cassandra.BatchType),
-		maxBatchSize:        cfg.Cassandra.MaxBatchSize,
-		ackMode:             cfg.Cassandra.AckMode,
-		writeTimestamp:      cfg.Cassandra.WriteTimestamp,
+		session:              realSession,
+		keyspace:             cfg.Cassandra.Keyspace,
+		dcpCheckpointCommit:  dcpCheckpointCommit,
+		jobQueue:             make(chan []BatchItem, cfg.Cassandra.WorkerQueueSize),
+		shutdownCh:           make(chan struct{}),
+		flushCh:              make(chan struct{}, 1),
+		metric:               &Metric{},
+		preparedStmts:        make(map[string]string),
+		useBatch:             cfg.Cassandra.UseBatch,
+		batchType:            getBatchType(cfg.Cassandra.BatchType),
+		maxBatchSize:         cfg.Cassandra.MaxBatchSize,
+		ackMode:              cfg.Cassandra.AckMode,
+		writeTimestamp:       cfg.Cassandra.WriteTimestamp,
+		batchBuffer:          make([]BatchItem, 0, batchSizeLimit),
+		batchSizeLimit:       batchSizeLimit,
+		batchByteSizeLimit:   batchByteSizeLimit,
+		batchTickerDuration:  batchTickerDuration,
+		batchTicker:          time.NewTicker(batchTickerDuration),
+		maxInflightPerWorker: maxInflightPerWorker,
 	}
 
 	for i := 0; i < workerCount; i++ {
@@ -99,10 +138,40 @@ func (b *Bulk) worker() {
 	}
 }
 
-// StartBulk blocks until Close is called. With no buffer or ticker,
-// this simply waits for the shutdown signal and drains the worker pool.
+// StartBulk blocks until Close is called. Manages ticker-based batch flushing
+// and waits for the shutdown signal before draining the worker pool.
 func (b *Bulk) StartBulk() {
+	// Start ticker-based auto-flush goroutine
+	go func() {
+		for {
+			select {
+			case <-b.batchTicker.C:
+				// Ticker fired, flush any accumulated batch
+				b.batchMutex.Lock()
+				if len(b.batchBuffer) > 0 {
+					b.flushBatchLocked()
+				}
+				b.batchMutex.Unlock()
+			case <-b.shutdownCh:
+				return
+			}
+		}
+	}()
+
+	// Wait for shutdown signal
 	<-b.shutdownCh
+
+	// Final flush before shutdown
+	b.batchMutex.Lock()
+	if len(b.batchBuffer) > 0 {
+		b.flushBatchLocked()
+	}
+	b.batchMutex.Unlock()
+
+	// Stop ticker
+	b.batchTicker.Stop()
+
+	// Close job queue and wait for workers to finish
 	close(b.jobQueue)
 	b.wg.Wait()
 }
@@ -145,11 +214,14 @@ func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, acti
 	}
 
 	batch := make([]BatchItem, 0, len(actions))
+	totalSize := 0
 	for _, action := range actions {
 		if action == nil {
 			continue
 		}
+		itemSize := estimateSize(action)
 		batch = append(batch, BatchItem{Model: action, Ack: ackFn})
+		totalSize += itemSize
 	}
 
 	if len(batch) == 0 {
@@ -159,8 +231,97 @@ func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, acti
 		return
 	}
 
-	// Blocks when jobQueue is full, backpressuring the DCP dispatch goroutine.
-	b.jobQueue <- batch
+	// Add to buffer with batching logic
+	b.batchMutex.Lock()
+
+	// Check if adding this batch would exceed limits
+	shouldFlush := b.currentBatchSize+len(batch) >= b.batchSizeLimit ||
+		b.currentByteSize+totalSize >= b.batchByteSizeLimit
+
+	if shouldFlush && len(b.batchBuffer) > 0 {
+		// Flush current buffer first
+		b.flushBatchLocked()
+	}
+
+	// Add new items to buffer
+	b.batchBuffer = append(b.batchBuffer, batch...)
+	b.currentBatchSize += len(batch)
+	b.currentByteSize += totalSize
+
+	// Check again if we should flush after adding
+	if b.currentBatchSize >= b.batchSizeLimit || b.currentByteSize >= b.batchByteSizeLimit {
+		b.flushBatchLocked()
+	}
+
+	b.batchMutex.Unlock()
+}
+
+// flushBatchLocked sends the current buffer to workers. Must be called with batchMutex held.
+func (b *Bulk) flushBatchLocked() {
+	if len(b.batchBuffer) == 0 {
+		return
+	}
+
+	// Copy buffer to send to worker
+	batchToSend := make([]BatchItem, len(b.batchBuffer))
+	copy(batchToSend, b.batchBuffer)
+
+	// Reset buffer (reuse underlying array for efficiency)
+	b.batchBuffer = b.batchBuffer[:0]
+	b.currentBatchSize = 0
+	b.currentByteSize = 0
+
+	// Reset ticker to prevent immediate flush after this one
+	b.batchTicker.Reset(b.batchTickerDuration)
+
+	// Send to worker queue (non-blocking to avoid deadlock)
+	select {
+	case b.jobQueue <- batchToSend:
+	case <-b.shutdownCh:
+		return
+	}
+}
+
+// estimateSize estimates the approximate byte size of a Model
+func estimateSize(model Model) int {
+	if model == nil {
+		return 0
+	}
+
+	raw, ok := model.(*Raw)
+	if !ok {
+		return 100 // default estimate for unknown types
+	}
+
+	size := 0
+	size += len(raw.Table) * 2 // table name (UTF-16 estimate)
+
+	// Estimate document size
+	for k, v := range raw.Document {
+		size += len(k) * 2
+		size += estimateValueSize(v)
+	}
+
+	// Estimate filter size
+	for k, v := range raw.Filter {
+		size += len(k) * 2
+		size += estimateValueSize(v)
+	}
+
+	return size
+}
+
+func estimateValueSize(v interface{}) int {
+	switch val := v.(type) {
+	case string:
+		return len(val) * 2
+	case []byte:
+		return len(val)
+	case int, int32, int64, uint, uint32, uint64, float32, float64, bool:
+		return 8
+	default:
+		return 50 // default estimate
+	}
 }
 
 func (b *Bulk) resolveTimestamp(eventTime time.Time) int64 {
@@ -190,8 +351,44 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 			panic(fmt.Sprintf("Cassandra batch write failed: %v", err))
 		}
 	} else {
+		// Parallel execution with semaphore-based concurrency control
+		var wg sync.WaitGroup
+		semaphore := make(chan struct{}, b.maxInflightPerWorker)
+		errChan := make(chan error, len(batch))
+
 		for _, item := range batch {
-			b.requestSync(item)
+			if item.Model == nil {
+				continue
+			}
+
+			wg.Add(1)
+			go func(item BatchItem) {
+				defer wg.Done()
+
+				// Acquire semaphore
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+
+				// Process item
+				defer func() {
+					if r := recover(); r != nil {
+						errChan <- fmt.Errorf("panic in batch processing: %v", r)
+					}
+				}()
+
+				b.requestSync(item)
+			}(item)
+		}
+
+		// Wait for all goroutines to complete
+		wg.Wait()
+		close(errChan)
+
+		// Check for errors
+		if len(errChan) > 0 {
+			err := <-errChan
+			log.Printf("Cassandra parallel write error: %v", err)
+			panic(fmt.Sprintf("Cassandra parallel write failed: %v", err))
 		}
 	}
 
