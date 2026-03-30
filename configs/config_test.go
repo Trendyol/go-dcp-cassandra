@@ -55,9 +55,48 @@ func TestCassandra_SetDefaults_BatchConfig(t *testing.T) {
 	cassandra := Cassandra{}
 	cassandra.setDefaults()
 
-	// Test batch defaults
-	assert.Equal(t, "logged", cassandra.BatchType)
-	assert.Equal(t, 65536, cassandra.MaxBatchSize)
+	assert.Equal(t, 2000, cassandra.BatchSizeLimit)
+	assert.Equal(t, 10*1024*1024, cassandra.BatchByteSizeLimit)
+	assert.Equal(t, 10*time.Second, cassandra.BatchTickerDuration)
+	assert.Equal(t, 100, cassandra.MaxInFlightRequests)
+	assert.False(t, cassandra.BatchPerEvent)
+}
+
+func TestCassandra_SetDefaults_WriteTimestamp(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "none"},
+		{"invalid", "none"},
+		{"none", "none"},
+		{"event_time", "event_time"},
+		{"now", "now"},
+		{"  NOW  ", "now"},
+	}
+	for _, tt := range tests {
+		c := Cassandra{WriteTimestamp: tt.input}
+		c.setDefaults()
+		assert.Equal(t, tt.expected, c.WriteTimestamp, "input: %q", tt.input)
+	}
+}
+
+func TestCassandra_SetDefaults_HostSelectionPolicy(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "token_aware"},
+		{"invalid", "token_aware"},
+		{"token_aware", "token_aware"},
+		{"round_robin", "round_robin"},
+		{"  ROUND_ROBIN  ", "round_robin"},
+	}
+	for _, tt := range tests {
+		c := Cassandra{HostSelectionPolicy: tt.input}
+		c.setDefaults()
+		assert.Equal(t, tt.expected, c.HostSelectionPolicy, "input: %q", tt.input)
+	}
 }
 
 func TestCassandra_SetDefaults_ConnectionPooling(t *testing.T) {
@@ -84,8 +123,6 @@ func TestCassandra_SetDefaults_RetryPolicy(t *testing.T) {
 
 func TestCassandra_SetDefaults_CustomValues(t *testing.T) {
 	cassandra := Cassandra{
-		BatchType:        "unlogged",
-		MaxBatchSize:     1000,
 		NumConns:         5,
 		ConnectTimeout:   10 * time.Second,
 		MaxPreparedStmts: 2000,
@@ -102,9 +139,6 @@ func TestCassandra_SetDefaults_CustomValues(t *testing.T) {
 
 	cassandra.setDefaults()
 
-	// Custom values should remain unchanged
-	assert.Equal(t, "unlogged", cassandra.BatchType)
-	assert.Equal(t, 1000, cassandra.MaxBatchSize)
 	assert.Equal(t, 5, cassandra.NumConns)
 	assert.Equal(t, 10*time.Second, cassandra.ConnectTimeout)
 	assert.Equal(t, 2000, cassandra.MaxPreparedStmts)

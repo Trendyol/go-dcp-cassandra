@@ -8,12 +8,13 @@ Cassandra tables in near real-time.
 * Custom Cassandra queries **per** DCP event.
 * **Update multiple documents** for a DCP event(see [Example](#example)).
 * Handling different DCP events such as **expiration, deletion and mutation**(see [Example](#example)).
-* **Managing batch configurations** such as maximum batch size, batch ticker durations.
+* **Buffer accumulation** with configurable size and time limits for high-throughput batching.
+* **Concurrent writes** with configurable in-flight request cap.
+* **Per-event unlogged batches** for mappers that emit multiple rows per DCP event.
 * **Scale up and down** by custom membership algorithms(Couchbase, KubernetesHa, Kubernetes StatefulSet or
   Static, see [examples](https://github.com/Trendyol/go-dcp#examples)).
 * **Easily manageable configurations**.
 * **Flexible mapping** with support for both default mapper (configuration-based) and custom mapper (code-based).
-* **Parallel processing** with configurable worker count.
 * **Graceful shutdown** with safe batch writing to Cassandra.
 
 ## Example
@@ -46,6 +47,78 @@ func main() {
 }
 ```
 
+## How It Works
+
+### Write Pipeline
+
+```
+Couchbase DCP
+     │
+     ▼
+  mapper()          ← your code transforms a DCP event into []cassandra.Model
+     │
+     ▼
+  active buffer     ← shared in-memory buffer, mutex protected
+     │
+     ├── flush trigger: batchSizeLimit, batchByteSizeLimit, or batchTickerDuration
+     │
+     ▼
+   swap buffer       ← active buffer swapped out; DCP immediately resumes writing to fresh buffer
+     │
+     ├── wait for previous flush to complete (max 2 buffers: one active, one in-flight)
+     │   if Cassandra is slow, AddActions blocks here providing backpressure
+     │
+     ▼
+  concurrent writes ← up to maxInFlightRequests goroutines write to Cassandra simultaneously
+     │               if batchPerEvent: multi-row events grouped into a single UNLOGGED BATCH
+     │
+     ▼
+  all writes done → ack all items in order → dcpClient.Commit()
+     │
+     ▼
+  Cassandra
+```
+
+### Buffering and Flushing
+
+DCP events are accumulated in a shared in-memory buffer. A flush is triggered when any of the following conditions are met:
+
+- The number of items reaches `batchSizeLimit`
+- The estimated byte size of the buffer reaches `batchByteSizeLimit`
+- The `batchTickerDuration` interval elapses
+
+On flush, the buffer is **swapped atomically** — the active buffer is replaced with a fresh empty one and returned immediately, so `AddActions` is never blocked waiting for Cassandra writes.
+
+Only one flush is in flight at a time. If a new flush is triggered while the previous one is still writing, it waits until the previous flush's workers finish before starting its own. This preserves correct checkpoint ordering.
+
+### Concurrent Writes
+
+During a flush, up to `maxInFlightRequests` goroutines write to Cassandra concurrently. This is the primary throughput knob — set it to match the number of Cassandra nodes × connections per node.
+
+With `writeTimestamp: event_time` or `writeTimestamp: now`, concurrent writes for the same key are safe — the `USING TIMESTAMP` clause ensures the most recent event always wins in Cassandra regardless of write completion order.
+
+### Per-Event Batching
+
+When `batchPerEvent: true`, actions returned by the mapper for a **single DCP event** are grouped into one CQL `UNLOGGED BATCH` statement. This reduces round trips for mappers that emit multiple rows per event (e.g. fan-out to multiple tables).
+
+When `batchPerEvent: false` (default), every action is an individual prepared statement routed directly to the owning Cassandra replica via token-aware routing.
+
+### Checkpointing
+
+`dcpClient.Commit()` is called once per flush, after all writes in the flush complete. This is much cheaper than committing per-event — at high throughput, commits happen at the flush boundary (controlled by `batchSizeLimit` and `batchTickerDuration`) rather than on every DCP event.
+
+All items in a flush are acked after writes complete, so the checkpoint always reflects a consistent written state. On a crash, the entire last flush window is replayed.
+
+### Write Timestamp
+
+Set `writeTimestamp` to attach a `USING TIMESTAMP` clause to every write:
+
+- `none` (default): no timestamp clause; Cassandra uses the server-side write time
+- `event_time`: uses the DCP event time in microseconds; correct ordering even with concurrent writes
+- `now`: uses the wall clock at ingestion time in microseconds; same correctness guarantee as `event_time`
+
+Recommended when using concurrent writes (`maxInFlightRequests > 1`) to ensure last-write-wins correctness.
+
 ## Configuration
 
 ### Example Configuration
@@ -59,6 +132,9 @@ logging:
 dcp:
   group:
     name: example_group
+  checkpoint:
+    type: auto       # go-dcp persists checkpoints automatically on an interval
+    interval: 10s    # tune based on acceptable replay window on crash
 metadata:
   config:
     bucket: metadata
@@ -67,10 +143,13 @@ cassandra:
     - localhost:9042
   keyspace: example_keyspace
   timeout: 10s
-  batchSizeLimit: 1000
+  batchSizeLimit: 2000
   batchByteSizeLimit: 10485760
-  workerCount: 4
-  batchTickerDuration: 5s
+  batchTickerDuration: 10s
+  maxInFlightRequests: 100
+  batchPerEvent: false
+  writeTimestamp: event_time
+  hostSelectionPolicy: token_aware
   collectionTableMapping:
     - collection: example_collection
       tableName: example_table
@@ -88,28 +167,29 @@ Check out on [go-dcp](https://github.com/Trendyol/go-dcp#configuration)
 
 ### Cassandra Specific Configuration
 
-| Variable                                                | Type                     | Required | Default | Description                                                                                        |                                                           
-|---------------------------------------------------------|--------------------------|----------|---------|----------------------------------------------------------------------------------------------------|
-| `cassandra.hosts`                                       | []string                 | yes      |         | Cassandra connection hosts                                                                         |
-| `cassandra.username`                                    | string                   | yes      |         | Cassandra username                                                                                 |
-| `cassandra.password`                                    | string                   | yes      |         | Cassandra password                                                                                 |
-| `cassandra.keyspace`                                    | string                   | yes      |         | Cassandra keyspace name                                                                            |
-| `cassandra.timeout`                                     | time.Duration            | no       | 10s     | Cassandra query timeout                                                                            |
-| `cassandra.batchSize`                                   | int                      | no       | 100     | Batch size for bulk operations                                                                     |
-| `cassandra.batchTimeout`                                | time.Duration            | no       | 2s      | Batch timeout duration                                                                             |
-| `cassandra.batchSizeLimit`                              | int                      | no       | 1000    | Maximum number of records in a batch                                                              |
-| `cassandra.batchTickerDuration`                         | time.Duration            | no       | 5s      | Batch is being flushed automatically at specific time intervals for long waiting messages in batch |
-| `cassandra.batchByteSizeLimit`                          | int                      | no       | 10485760| Maximum byte size of a batch                                                                       |
-| `cassandra.workerCount`                                 | int                      | no       | 4       | Number of parallel workers                                                                         |
-| `cassandra.tableName`                                   | string                   | no       |         | Target table name (used when no collection mapping is configured)                                  |
-| `cassandra.consistency`                                 | string                   | no       | QUORUM  | Cassandra consistency level                                                                        |
-| `cassandra.collectionTableMapping`                      | []CollectionTableMapping | no       |         | Will be used for default mapper. Please read the next topic.                                       |
+| Variable                            | Type                     | Required | Default      | Description                                                                                                                                          |
+|-------------------------------------|--------------------------|----------|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `cassandra.hosts`                   | []string                 | yes      |              | Cassandra connection hosts                                                                                                                           |
+| `cassandra.username`                | string                   | yes      |              | Cassandra username                                                                                                                                   |
+| `cassandra.password`                | string                   | yes      |              | Cassandra password                                                                                                                                   |
+| `cassandra.keyspace`                | string                   | yes      |              | Cassandra keyspace name                                                                                                                              |
+| `cassandra.timeout`                 | time.Duration            | no       | 10s          | Cassandra query timeout                                                                                                                              |
+| `cassandra.batchSizeLimit`          | int                      | no       | 2000         | Flush the buffer when this many items have accumulated                                                                                               |
+| `cassandra.batchByteSizeLimit`      | int                      | no       | 10485760     | Flush the buffer when its estimated byte size exceeds this limit                                                                                     |
+| `cassandra.batchTickerDuration`     | time.Duration            | no       | 10s          | Flush the buffer at this interval even if size/byte limits are not reached                                                                           |
+| `cassandra.maxInFlightRequests`     | int                      | no       | 100          | Maximum concurrent Cassandra writes during a flush. Set to Cassandra node count × connections per node                                               |
+| `cassandra.batchPerEvent`           | bool                     | no       | false        | Group multiple rows from the same DCP event into a single CQL UNLOGGED BATCH. Useful when the mapper emits multiple rows per event                   |
+| `cassandra.writeTimestamp`          | string                   | no       | none         | `none`, `event_time` (DCP event time in µs), or `now` (ingestion wall clock in µs). Recommended when maxInFlightRequests > 1                        |
+| `cassandra.hostSelectionPolicy`     | string                   | no       | token_aware  | `token_aware` (default) or `round_robin`                                                                                                             |
+| `cassandra.consistency`             | string                   | no       | QUORUM       | Cassandra consistency level                                                                                                                          |
+| `cassandra.tableName`               | string                   | no       |              | Target table name (used when no collection mapping is configured)                                                                                    |
+| `cassandra.collectionTableMapping`  | []CollectionTableMapping | no       |              | Used by the default mapper. See next section                                                                                                         |
 
 ### Collection Table Mapping Configuration
 
 Collection table mapping configuration is optional. This configuration should only be provided if you are using the default mapper. If you are implementing your own custom mapper function, this configuration is not needed.
 
-| Variable                                                 | Type    | Required | Default | Description                                                                  |                                                           
+| Variable                                                 | Type    | Required | Default | Description                                                                  |
 |----------------------------------------------------------|---------|----------|---------|------------------------------------------------------------------------------|
 | `cassandra.collectionTableMapping[].collection`          | string  | yes      |         | Couchbase collection name                                                    |
 | `cassandra.collectionTableMapping[].tableName`           | string  | yes      |         | Target Cassandra table name                                                  |
