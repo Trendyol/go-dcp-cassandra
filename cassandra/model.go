@@ -18,7 +18,9 @@ type Raw struct {
 	Document  map[string]interface{}
 	Operation OperationType
 	Filter    map[string]interface{}
+	RowKey    map[string]interface{}
 	ID        string
+	Timestamp int64
 }
 
 type ExecArgs struct {

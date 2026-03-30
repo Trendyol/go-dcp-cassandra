@@ -81,17 +81,17 @@ func newConnector(cf any, mapper Mapper) (Connector, error) {
 		config: cfg,
 	}
 
-	bulk, err := cassandra.NewBulk(cfg, func() {})
-	if err != nil {
-		return nil, err
-	}
-	conn.bulk = bulk
-
 	dcpClient, err := dcp.NewDcp(&cfg.Dcp, conn.listener)
 	if err != nil {
 		return nil, err
 	}
 	conn.dcp = dcpClient
+
+	bulk, err := cassandra.NewBulk(cfg, func() { dcpClient.Commit() })
+	if err != nil {
+		return nil, err
+	}
+	conn.bulk = bulk
 
 	conn.dcp.SetEventHandler(
 		&DcpEventHandler{
