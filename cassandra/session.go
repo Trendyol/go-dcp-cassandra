@@ -27,6 +27,7 @@ type Query interface {
 
 type Batch interface {
 	Query(string, ...interface{})
+	WithTimestamp(int64)
 	Size() int
 	ExecuteBatch() error
 }
@@ -103,6 +104,10 @@ type GocqlBatchAdapter struct {
 
 func (b *GocqlBatchAdapter) Query(stmt string, values ...interface{}) {
 	b.batch.Query(stmt, values...)
+}
+
+func (b *GocqlBatchAdapter) WithTimestamp(timestamp int64) {
+	b.batch.WithTimestamp(timestamp)
 }
 
 func (b *GocqlBatchAdapter) Size() int {

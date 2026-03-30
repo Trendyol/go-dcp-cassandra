@@ -69,7 +69,7 @@ cassandra:
   timeout: 10s
   batchSizeLimit: 1000
   batchByteSizeLimit: 10485760
-  workerCount: 4
+  workerCount: 1
   batchTickerDuration: 5s
   collectionTableMapping:
     - collection: example_collection
@@ -105,11 +105,45 @@ Check out on [go-dcp](https://github.com/Trendyol/go-dcp#configuration)
 | `cassandra.maxBatchSize`                                | int                      | no       | 65536   | Maximum number of statements sent in a single CQL batch execution                                  |
 | `cassandra.batchScope`                                  | string                   | no       | global  | `global` mixes actions across events until flush; `event` batches actions per single DCP event    |
 | `cassandra.ackMode`                                     | string                   | no       | after_write | `after_write` acks offsets only after successful Cassandra write; `immediate` acks before flush |
-| `cassandra.writeTimestamp`                              | string                   | no       | none    | `event_time` adds `USING TIMESTAMP` from DCP event time; `none` uses Cassandra default timestamp |
-| `cassandra.workerCount`                                 | int                      | no       | 4       | Number of parallel workers                                                                         |
+| `cassandra.writeTimestamp`                              | string                   | no       | none    | `event_time` uses DCP event time, `now` uses connector write time, `none` uses Cassandra default timestamp |
+| `cassandra.workerCount`                                 | int                      | no       | 1       | Number of parallel workers                                                                         |
 | `cassandra.tableName`                                   | string                   | no       |         | Target table name (used when no collection mapping is configured)                                  |
 | `cassandra.consistency`                                 | string                   | no       | QUORUM  | Cassandra consistency level                                                                        |
 | `cassandra.collectionTableMapping`                      | []CollectionTableMapping | no       |         | Will be used for default mapper. Please read the next topic.                                       |
+
+### Write Execution Model
+
+- A single DCP event is mapped to `[]cassandra.Model` by the mapper.
+- Work is processed through per-vbucket worker lanes.
+  - each lane has its own internal queue
+  - each lane queue buffer is currently set to `workerCount` (internal default)
+  - this keeps queue growth bounded while still allowing short burst absorption before backpressure kicks in
+  - each event is routed by `vbID % workerCount`, so all events from the same vbucket always go to the same lane
+  - ordering is preserved per vbucket while different vbuckets can process concurrently when `workerCount > 1`
+- `cassandra.workerCount` controls how many worker lanes are created (default: `1`).
+- `cassandra.batchScope` defines grouping behavior before Cassandra execution:
+  - `global`: actions from multiple events can be buffered together until flush conditions are met.
+  - `event`: actions from one event are executed as one isolated unit.
+- `cassandra.ackMode` defines checkpoint acknowledgment timing:
+  - `after_write` (default): ack is called only after Cassandra write execution succeeds.
+  - `immediate`: ack is called before buffered/queued write execution.
+- `cassandra.useBatch` controls execution strategy:
+  - `true`: uses Cassandra CQL batch API.
+  - `false`: executes one query per action.
+- Deduplication behavior depends on scope:
+  - `global`: buffered actions are deduplicated by action key before flush. The latest action for the same key replaces earlier buffered actions (last-write-wins in buffer).
+  - `event`: mapper output is preserved as-is for that event; no cross-event deduplication is applied.
+- Action key for global deduplication is derived from table and key fields:
+  - `insert`/`upsert`: uses `Document` fields
+  - `update`/`delete`: uses `Filter` fields
+  - if key fields are empty/non-raw model, the action is treated as unique (no dedup key match)
+- For `batchScope: event`, CQL execution does not split by `maxBatchSize`; one event remains one batch execution.
+- `cassandra.writeTimestamp` controls write timestamp source:
+  - `event_time`: uses DCP event time
+  - `now`: uses connector-side current time when actions are enqueued
+  - `none`: relies on Cassandra coordinator timestamp
+  - `batchScope: event` + `useBatch: true`: applies one batch-level timestamp
+  - otherwise: applies per-query `USING TIMESTAMP`
 
 ### Collection Table Mapping Configuration
 

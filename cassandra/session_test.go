@@ -46,11 +46,16 @@ type enhancedMockBatch struct {
 	queries   []string
 	batchType BatchType
 	size      int
+	timestamp int64
 }
 
 func (m *enhancedMockBatch) Query(stmt string, values ...interface{}) {
 	m.queries = append(m.queries, stmt)
 	m.size++
+}
+
+func (m *enhancedMockBatch) WithTimestamp(timestamp int64) {
+	m.timestamp = timestamp
 }
 
 func (m *enhancedMockBatch) Size() int {

@@ -60,6 +60,7 @@ const (
 	ackModeAfterWrite   = "after_write"
 	writeTimestampNone  = "none"
 	writeTimestampEvent = "event_time"
+	writeTimestampNow   = "now"
 )
 
 type Mapper func(event interface{}) []Model
@@ -210,7 +211,7 @@ func (b *Bulk) processBatch(batch []BatchItem) {
 	startedTime := time.Now()
 
 	if b.useBatch {
-		err := b.processBatchWithBatch(batch)
+		err := b.processWithCqlBatch(batch)
 		if err != nil {
 			log.Printf("Cassandra batch write error: %v", err)
 			panic(fmt.Sprintf("Cassandra batch write failed: %v", err))
@@ -291,10 +292,16 @@ func (b *Bulk) createAckFunc(ctx *models.ListenerContext) func() {
 }
 
 func (b *Bulk) resolveTimestampMicros(eventTime time.Time) *int64 {
-	if b.writeTimestamp != writeTimestampEvent {
+	if b.writeTimestamp == writeTimestampNone {
 		return nil
 	}
-	ts := eventTime.UnixMicro()
+
+	var ts int64
+	if b.writeTimestamp == writeTimestampNow {
+		ts = time.Now().UnixMicro()
+	} else {
+		ts = eventTime.UnixMicro()
+	}
 	return &ts
 }
 
@@ -449,15 +456,9 @@ func (b *Bulk) insert(raw *Raw, timestampMicros *int64) error {
 	}
 
 	withTimestamp := timestampMicros != nil
-	cacheKey := fmt.Sprintf("INSERT:%s:%d:%t", raw.Table, len(raw.Document), withTimestamp)
+	columns := sortedMapKeys(raw.Document)
+	cacheKey := buildInsertCacheKeyFromColumns(raw.Table, columns, withTimestamp)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "INSERT", withTimestamp)
-
-	// Sort columns to match the query preparation order
-	columns := make([]string, 0, len(raw.Document))
-	for k := range raw.Document {
-		columns = append(columns, k)
-	}
-	sort.Strings(columns)
 
 	values := make([]interface{}, 0, len(raw.Document)+1)
 	for _, column := range columns {
@@ -476,21 +477,10 @@ func (b *Bulk) update(raw *Raw, timestampMicros *int64) error {
 	}
 
 	withTimestamp := timestampMicros != nil
-	cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d:%t", raw.Table, len(raw.Document), len(raw.Filter), withTimestamp)
+	docColumns := sortedMapKeys(raw.Document)
+	filterColumns := sortedMapKeys(raw.Filter)
+	cacheKey := buildUpdateCacheKeyFromColumns(raw.Table, docColumns, filterColumns, withTimestamp)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "UPDATE", withTimestamp)
-
-	// Sort columns to match the query preparation order
-	docColumns := make([]string, 0, len(raw.Document))
-	for k := range raw.Document {
-		docColumns = append(docColumns, k)
-	}
-	sort.Strings(docColumns)
-
-	filterColumns := make([]string, 0, len(raw.Filter))
-	for k := range raw.Filter {
-		filterColumns = append(filterColumns, k)
-	}
-	sort.Strings(filterColumns)
 
 	values := make([]interface{}, 0, len(raw.Document)+len(raw.Filter)+1)
 
@@ -515,15 +505,9 @@ func (b *Bulk) delete(raw *Raw, timestampMicros *int64) error {
 	}
 
 	withTimestamp := timestampMicros != nil
-	cacheKey := fmt.Sprintf("DELETE:%s:%d:%t", raw.Table, len(raw.Filter), withTimestamp)
+	filterColumns := sortedMapKeys(raw.Filter)
+	cacheKey := buildDeleteCacheKeyFromColumns(raw.Table, filterColumns, withTimestamp)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "DELETE", withTimestamp)
-
-	// Sort columns to match the query preparation order
-	filterColumns := make([]string, 0, len(raw.Filter))
-	for k := range raw.Filter {
-		filterColumns = append(filterColumns, k)
-	}
-	sort.Strings(filterColumns)
 
 	values := make([]interface{}, 0, len(raw.Filter)+1)
 	if withTimestamp {
@@ -576,6 +560,45 @@ func join(arr []string, sep string) string {
 		result += s
 	}
 	return result
+}
+
+func sortedMapKeys(values map[string]interface{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func buildInsertCacheKey(table string, document map[string]interface{}, withTimestamp bool) string {
+	return buildInsertCacheKeyFromColumns(table, sortedMapKeys(document), withTimestamp)
+}
+
+func buildUpdateCacheKey(table string, document map[string]interface{}, filter map[string]interface{}, withTimestamp bool) string {
+	return buildUpdateCacheKeyFromColumns(table, sortedMapKeys(document), sortedMapKeys(filter), withTimestamp)
+}
+
+func buildDeleteCacheKey(table string, filter map[string]interface{}, withTimestamp bool) string {
+	return buildDeleteCacheKeyFromColumns(table, sortedMapKeys(filter), withTimestamp)
+}
+
+func buildInsertCacheKeyFromColumns(table string, columns []string, withTimestamp bool) string {
+	return fmt.Sprintf("INSERT:%s:%s:%t", table, strings.Join(columns, ","), withTimestamp)
+}
+
+func buildUpdateCacheKeyFromColumns(table string, docColumns []string, filterColumns []string, withTimestamp bool) string {
+	return fmt.Sprintf(
+		"UPDATE:%s:%s:%s:%t",
+		table,
+		strings.Join(docColumns, ","),
+		strings.Join(filterColumns, ","),
+		withTimestamp,
+	)
+}
+
+func buildDeleteCacheKeyFromColumns(table string, filterColumns []string, withTimestamp bool) string {
+	return fmt.Sprintf("DELETE:%s:%s:%t", table, strings.Join(filterColumns, ","), withTimestamp)
 }
 
 func calcItemSize(action Model) int {
@@ -737,12 +760,17 @@ func getBatchType(batchTypeStr string) BatchType {
 }
 
 //nolint:funlen
-func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
+func (b *Bulk) processWithCqlBatch(items []BatchItem) error {
 	if len(items) == 0 {
 		return nil
 	}
 
 	batch := b.session.NewBatch(b.batchType)
+	useBatchTimestamp := b.batchScope == batchScopeEvent && items[0].TimestampMicros != nil
+	allowBatchSplitting := b.batchScope != batchScopeEvent
+	if useBatchTimestamp {
+		batch.WithTimestamp(*items[0].TimestampMicros)
+	}
 
 	for _, item := range items {
 		if item.Model == nil {
@@ -756,48 +784,31 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 
 		var query string
 		var values []interface{}
-		withTimestamp := item.TimestampMicros != nil
+		queryWithTimestamp := item.TimestampMicros != nil && !useBatchTimestamp
 
 		switch rawModel.Operation {
 		case Insert, Upsert:
-			cacheKey := fmt.Sprintf("INSERT:%s:%d:%t", rawModel.Table, len(rawModel.Document), withTimestamp)
-			query = b.getCachedPreparedStatement(cacheKey, rawModel, "INSERT", withTimestamp)
-
-			// Sort columns to match the query preparation order
-			columns := make([]string, 0, len(rawModel.Document))
-			for k := range rawModel.Document {
-				columns = append(columns, k)
-			}
-			sort.Strings(columns)
+			columns := sortedMapKeys(rawModel.Document)
+			cacheKey := buildInsertCacheKeyFromColumns(rawModel.Table, columns, queryWithTimestamp)
+			query = b.getCachedPreparedStatement(cacheKey, rawModel, "INSERT", queryWithTimestamp)
 
 			values = make([]interface{}, 0, len(rawModel.Document)+1)
 			for _, column := range columns {
 				values = append(values, rawModel.Document[column])
 			}
-			if withTimestamp {
+			if queryWithTimestamp {
 				values = append(values, *item.TimestampMicros)
 			}
 
 		case Update:
-			cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d:%t", rawModel.Table, len(rawModel.Document), len(rawModel.Filter), withTimestamp)
-			query = b.getCachedPreparedStatement(cacheKey, rawModel, "UPDATE", withTimestamp)
-
-			// Sort columns to match the query preparation order
-			docColumns := make([]string, 0, len(rawModel.Document))
-			for k := range rawModel.Document {
-				docColumns = append(docColumns, k)
-			}
-			sort.Strings(docColumns)
-
-			filterColumns := make([]string, 0, len(rawModel.Filter))
-			for k := range rawModel.Filter {
-				filterColumns = append(filterColumns, k)
-			}
-			sort.Strings(filterColumns)
+			docColumns := sortedMapKeys(rawModel.Document)
+			filterColumns := sortedMapKeys(rawModel.Filter)
+			cacheKey := buildUpdateCacheKeyFromColumns(rawModel.Table, docColumns, filterColumns, queryWithTimestamp)
+			query = b.getCachedPreparedStatement(cacheKey, rawModel, "UPDATE", queryWithTimestamp)
 
 			values = make([]interface{}, 0, len(rawModel.Document)+len(rawModel.Filter)+1)
 
-			if withTimestamp {
+			if queryWithTimestamp {
 				values = append(values, *item.TimestampMicros)
 			}
 
@@ -810,18 +821,12 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 			}
 
 		case Delete:
-			cacheKey := fmt.Sprintf("DELETE:%s:%d:%t", rawModel.Table, len(rawModel.Filter), withTimestamp)
-			query = b.getCachedPreparedStatement(cacheKey, rawModel, "DELETE", withTimestamp)
-
-			// Sort columns to match the query preparation order
-			filterColumns := make([]string, 0, len(rawModel.Filter))
-			for k := range rawModel.Filter {
-				filterColumns = append(filterColumns, k)
-			}
-			sort.Strings(filterColumns)
+			filterColumns := sortedMapKeys(rawModel.Filter)
+			cacheKey := buildDeleteCacheKeyFromColumns(rawModel.Table, filterColumns, queryWithTimestamp)
+			query = b.getCachedPreparedStatement(cacheKey, rawModel, "DELETE", queryWithTimestamp)
 
 			values = make([]interface{}, 0, len(rawModel.Filter)+1)
-			if withTimestamp {
+			if queryWithTimestamp {
 				values = append(values, *item.TimestampMicros)
 			}
 			for _, column := range filterColumns {
@@ -831,7 +836,7 @@ func (b *Bulk) processBatchWithBatch(items []BatchItem) error {
 
 		batch.Query(query, values...)
 
-		if batch.Size() >= b.maxBatchSize {
+		if allowBatchSplitting && batch.Size() >= b.maxBatchSize {
 			if err := batch.ExecuteBatch(); err != nil {
 				return err
 			}
