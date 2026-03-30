@@ -181,6 +181,8 @@ func (m *mockBatch) Query(string, ...interface{}) {
 	m.size++
 }
 
+func (m *mockBatch) WithTimestamp(int64) {}
+
 func (m *mockBatch) Size() int {
 	return m.size
 }
@@ -208,12 +210,56 @@ func (m *mockBatchErr) Query(string, ...interface{}) {
 	m.size++
 }
 
+func (m *mockBatchErr) WithTimestamp(int64) {}
+
 func (m *mockBatchErr) Size() int {
 	return m.size
 }
 
 func (m *mockBatchErr) ExecuteBatch() error {
 	return fmt.Errorf("mock batch error")
+}
+
+type captureBatch struct {
+	queries      []string
+	size         int
+	hasTimestamp bool
+	timestamp    int64
+	onExecute    *int
+}
+
+func (c *captureBatch) Query(stmt string, values ...interface{}) {
+	c.queries = append(c.queries, stmt)
+	c.size++
+}
+
+func (c *captureBatch) WithTimestamp(timestamp int64) {
+	c.hasTimestamp = true
+	c.timestamp = timestamp
+}
+
+func (c *captureBatch) Size() int {
+	return c.size
+}
+
+func (c *captureBatch) ExecuteBatch() error {
+	if c.onExecute != nil {
+		*c.onExecute++
+	}
+	return nil
+}
+
+type captureSession struct {
+	lastBatch             *captureBatch
+	executeBatchCallCount int
+}
+
+func (c *captureSession) Query(string, ...interface{}) Query         { return &mockQuery{} }
+func (c *captureSession) PreparedQuery(string, ...interface{}) Query { return &mockQuery{} }
+func (c *captureSession) Close()                                     {}
+func (c *captureSession) NewBatch(BatchType) Batch {
+	c.lastBatch = &captureBatch{onExecute: &c.executeBatchCallCount}
+	return c.lastBatch
 }
 
 func TestBulk_WorkerProcessesBatch(t *testing.T) {
@@ -278,7 +324,7 @@ func TestBulk_AddActions_DcpRebalancing(t *testing.T) {
 	actions := []Model{
 		&Raw{Table: "test", Document: map[string]interface{}{"id": "1"}},
 	}
-	bulk.AddActions(nil, time.Now(), actions)
+	bulk.AddActions(nil, time.Now(), 0, actions)
 	if len(bulk.batch) != 0 {
 		t.Error("Batch should remain unchanged when DCP rebalancing")
 	}
@@ -459,7 +505,7 @@ func TestBulk_BatchMode_ProcessBatchWithBatch(t *testing.T) {
 		},
 	}
 
-	err := bulk.processBatchWithBatch(items)
+	err := bulk.processWithCqlBatch(items)
 	assert.NoError(t, err)
 }
 
@@ -540,26 +586,6 @@ func TestBulk_GetBatchType(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-func TestBulk_NewBulk_WithBatchConfig(t *testing.T) {
-	cfg := &config.Connector{
-		Cassandra: config.Cassandra{
-			Hosts:               []string{"localhost"},
-			Keyspace:            "test",
-			UseBatch:            true,
-			BatchType:           "unlogged",
-			MaxBatchSize:        100,
-			WorkerCount:         1,
-			BatchSizeLimit:      50,
-			BatchTickerDuration: 1 * time.Second,
-		},
-	}
-
-	bulk, err := NewBulk(cfg, func() {})
-
-	assert.Error(t, err)
-	assert.Nil(t, bulk)
 }
 
 func TestBulk_PreparedStatementCache_ConcurrentAccess(t *testing.T) {
@@ -670,7 +696,7 @@ func TestBulk_AddActions_AckAfterWrite_Global(t *testing.T) {
 		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
 	}
 
-	bulk.AddActions(ctx, time.Now(), actions)
+	bulk.AddActions(ctx, time.Now(), 7, actions)
 	assert.False(t, ackCalled)
 
 	bulk.flushMessages()
@@ -699,7 +725,7 @@ func TestBulk_AddActions_AckImmediate_Global(t *testing.T) {
 		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
 	}
 
-	bulk.AddActions(ctx, time.Now(), actions)
+	bulk.AddActions(ctx, time.Now(), 7, actions)
 	assert.True(t, ackCalled)
 }
 
@@ -724,7 +750,7 @@ func TestBulk_AddActions_AckAfterWrite_EventScope(t *testing.T) {
 		&Raw{Table: "test_table", Document: map[string]interface{}{"id": "2"}, Operation: Insert},
 	}
 
-	bulk.AddActions(ctx, time.Now(), actions)
+	bulk.AddActions(ctx, time.Now(), 7, actions)
 	assert.True(t, ackCalled)
 
 	close(bulk.jobCh)
@@ -749,4 +775,99 @@ func TestBulk_PreparedStatement_WithTimestamp(t *testing.T) {
 	assert.Contains(t, insertQ, "USING TIMESTAMP ?")
 	assert.Contains(t, updateQ, "USING TIMESTAMP ?")
 	assert.Contains(t, deleteQ, "USING TIMESTAMP ?")
+}
+
+func TestBulk_PreparedStatementCacheKey_UsesColumnNames(t *testing.T) {
+	insertA := buildInsertCacheKey("tbl", map[string]interface{}{"id": 1, "name": "a"}, false)
+	insertB := buildInsertCacheKey("tbl", map[string]interface{}{"id": 1, "title": "a"}, false)
+	assert.NotEqual(t, insertA, insertB)
+
+	updateA := buildUpdateCacheKey(
+		"tbl",
+		map[string]interface{}{"name": "a"},
+		map[string]interface{}{"id": 1, "lang": "tr"},
+		false,
+	)
+	updateB := buildUpdateCacheKey(
+		"tbl",
+		map[string]interface{}{"title": "a"},
+		map[string]interface{}{"id": 1, "lang": "tr"},
+		false,
+	)
+	assert.NotEqual(t, updateA, updateB)
+
+	deleteA := buildDeleteCacheKey("tbl", map[string]interface{}{"id": 1, "lang": "tr"}, false)
+	deleteB := buildDeleteCacheKey("tbl", map[string]interface{}{"id": 1, "region": "eu"}, false)
+	assert.NotEqual(t, deleteA, deleteB)
+}
+
+func TestBulk_ProcessBatchWithBatch_UsesBatchTimestampInEventScope(t *testing.T) {
+	session := &captureSession{}
+	ts := int64(123456789)
+	bulk := &Bulk{
+		session:            session,
+		keyspace:           "ks",
+		useBatch:           true,
+		batchScope:         batchScopeEvent,
+		batchType:          LoggedBatch,
+		maxBatchSize:       10,
+		preparedStmts:      make(map[string]string),
+		preparedStmtsMutex: sync.RWMutex{},
+	}
+
+	items := []BatchItem{{
+		Model: &Raw{
+			Table:     "test_table",
+			Document:  map[string]interface{}{"id": "1", "name": "v"},
+			Operation: Insert,
+		},
+		TimestampMicros: &ts,
+	}}
+
+	err := bulk.processWithCqlBatch(items)
+	assert.NoError(t, err)
+	assert.NotNil(t, session.lastBatch)
+	assert.True(t, session.lastBatch.hasTimestamp)
+	assert.Equal(t, ts, session.lastBatch.timestamp)
+	assert.Len(t, session.lastBatch.queries, 1)
+	assert.NotContains(t, session.lastBatch.queries[0], "USING TIMESTAMP ?")
+}
+
+func TestBulk_ProcessWithCqlBatch_DoesNotSplitInEventScope(t *testing.T) {
+	session := &captureSession{}
+	ts := int64(123456789)
+	bulk := &Bulk{
+		session:            session,
+		keyspace:           "ks",
+		useBatch:           true,
+		batchScope:         batchScopeEvent,
+		batchType:          LoggedBatch,
+		maxBatchSize:       1,
+		preparedStmts:      make(map[string]string),
+		preparedStmtsMutex: sync.RWMutex{},
+	}
+
+	items := []BatchItem{
+		{
+			Model: &Raw{
+				Table:     "test_table",
+				Document:  map[string]interface{}{"id": "1", "name": "v1"},
+				Operation: Insert,
+			},
+			TimestampMicros: &ts,
+		},
+		{
+			Model: &Raw{
+				Table:     "test_table",
+				Document:  map[string]interface{}{"id": "2", "name": "v2"},
+				Operation: Insert,
+			},
+			TimestampMicros: &ts,
+		},
+	}
+
+	err := bulk.processWithCqlBatch(items)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, session.executeBatchCallCount)
+	assert.Len(t, session.lastBatch.queries, 2)
 }

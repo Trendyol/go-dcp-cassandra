@@ -14,18 +14,34 @@ type CollectionTableMapping struct {
 }
 
 type Cassandra struct {
-	Username          string `yaml:"username"`
-	Password          string `yaml:"password"`
-	Keyspace          string `yaml:"keyspace"`
-	Compressor        string `yaml:"compressor"`
-	SerialConsistency string `yaml:"serialConsistency"`
-	BatchType         string `yaml:"batchType"`
-	BatchScope        string `yaml:"batchScope"`
-	AckMode           string `yaml:"ackMode"`
-	WriteTimestamp    string `yaml:"writeTimestamp"`
-	Consistency       string `yaml:"consistency"`
-	TableName         string `yaml:"tableName"`
-	SSL               struct {
+	Username            string        `yaml:"username"`
+	Password            string        `yaml:"password"`
+	Keyspace            string        `yaml:"keyspace"`
+	Hosts               []string      `yaml:"hosts"`
+	Compressor          string        `yaml:"compressor"`
+	SerialConsistency   string        `yaml:"serialConsistency"`
+	Consistency         string        `yaml:"consistency"`
+	TableName           string        `yaml:"tableName"`
+	Timeout             time.Duration `yaml:"timeout"`
+	ConnectTimeout      time.Duration `yaml:"connectTimeout"`
+	KeepAlive           time.Duration `yaml:"keepAlive"`
+	NumConns            int           `yaml:"numConns"`
+	PageSize            int           `yaml:"pageSize"`
+	MaxPreparedStmts    int           `yaml:"maxPreparedStmts"`
+	MaxRoutingKeyInfo   int           `yaml:"maxRoutingKeyInfo"`
+	WorkerCount         int           `yaml:"workerCount"`
+	UseBatch            bool          `yaml:"useBatch"`
+	BatchType           string        `yaml:"batchType"`
+	BatchScope          string        `yaml:"batchScope"`
+	AckMode             string        `yaml:"ackMode"`
+	WriteTimestamp      string        `yaml:"writeTimestamp"`
+	BatchSize           int           `yaml:"batchSize"`
+	BatchSizeLimit      int           `yaml:"batchSizeLimit"`
+	BatchByteSizeLimit  int           `yaml:"batchByteSizeLimit"`
+	BatchTimeout        time.Duration `yaml:"batchTimeout"`
+	BatchTickerDuration time.Duration `yaml:"batchTickerDuration"`
+	MaxBatchSize        int           `yaml:"maxBatchSize"`
+	SSL                 struct {
 		CertPath           string `yaml:"certPath"`
 		KeyPath            string `yaml:"keyPath"`
 		CaPath             string `yaml:"caPath"`
@@ -33,27 +49,11 @@ type Cassandra struct {
 		InsecureSkipVerify bool   `yaml:"insecureSkipVerify"`
 	} `yaml:"ssl"`
 	CollectionTableMapping []CollectionTableMapping `yaml:"collectionTableMapping,omitempty"`
-	Hosts                  []string                 `yaml:"hosts"`
 	RetryPolicy            struct {
 		NumRetries    int           `yaml:"numRetries"`
 		MinRetryDelay time.Duration `yaml:"minRetryDelay"`
 		MaxRetryDelay time.Duration `yaml:"maxRetryDelay"`
 	} `yaml:"retryPolicy"`
-	BatchTimeout        time.Duration `yaml:"batchTimeout"`
-	KeepAlive           time.Duration `yaml:"keepAlive"`
-	BatchByteSizeLimit  int           `yaml:"batchByteSizeLimit"`
-	Timeout             time.Duration `yaml:"timeout"`
-	MaxBatchSize        int           `yaml:"maxBatchSize"`
-	NumConns            int           `yaml:"numConns"`
-	ConnectTimeout      time.Duration `yaml:"connectTimeout"`
-	WorkerCount         int           `yaml:"workerCount"`
-	MaxPreparedStmts    int           `yaml:"maxPreparedStmts"`
-	MaxRoutingKeyInfo   int           `yaml:"maxRoutingKeyInfo"`
-	PageSize            int           `yaml:"pageSize"`
-	BatchTickerDuration time.Duration `yaml:"batchTickerDuration"`
-	BatchSizeLimit      int           `yaml:"batchSizeLimit"`
-	BatchSize           int           `yaml:"batchSize"`
-	UseBatch            bool          `yaml:"useBatch"`
 }
 
 type Connector struct {
@@ -129,7 +129,7 @@ func (c *Cassandra) setBatchDefaults() {
 	}
 
 	writeTimestamp := strings.TrimSpace(strings.ToLower(c.WriteTimestamp))
-	if writeTimestamp != "none" && writeTimestamp != "event_time" {
+	if writeTimestamp != "none" && writeTimestamp != "event_time" && writeTimestamp != "now" {
 		c.WriteTimestamp = "none"
 	} else {
 		c.WriteTimestamp = writeTimestamp

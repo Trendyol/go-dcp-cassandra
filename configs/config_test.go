@@ -122,6 +122,27 @@ func TestCassandra_SetDefaults_CustomValues(t *testing.T) {
 	assert.Equal(t, 2*time.Second, cassandra.RetryPolicy.MaxRetryDelay)
 }
 
+func TestCassandra_SetDefaults_WriteTimestampModes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "event time", input: "event_time", expected: "event_time"},
+		{name: "now", input: "now", expected: "now"},
+		{name: "none", input: "none", expected: "none"},
+		{name: "invalid", input: "foobar", expected: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cassandra := Cassandra{WriteTimestamp: tt.input}
+			cassandra.setDefaults()
+			assert.Equal(t, tt.expected, cassandra.WriteTimestamp)
+		})
+	}
+}
+
 func TestConnector_ApplyDefaults(t *testing.T) {
 	config := Connector{
 		Cassandra: Cassandra{
