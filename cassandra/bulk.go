@@ -60,6 +60,7 @@ const (
 	ackModeAfterWrite   = "after_write"
 	writeTimestampNone  = "none"
 	writeTimestampEvent = "event_time"
+	writeTimestampNow   = "now"
 )
 
 type Mapper func(event interface{}) []Model
@@ -291,10 +292,16 @@ func (b *Bulk) createAckFunc(ctx *models.ListenerContext) func() {
 }
 
 func (b *Bulk) resolveTimestampMicros(eventTime time.Time) *int64 {
-	if b.writeTimestamp != writeTimestampEvent {
+	if b.writeTimestamp == writeTimestampNone {
 		return nil
 	}
-	ts := eventTime.UnixMicro()
+
+	var ts int64
+	if b.writeTimestamp == writeTimestampNow {
+		ts = time.Now().UnixMicro()
+	} else {
+		ts = eventTime.UnixMicro()
+	}
 	return &ts
 }
 
