@@ -54,7 +54,6 @@ type Bulk struct {
 
 type BatchItem struct {
 	Model           Model
-	Done            chan struct{}
 	Acks            []func()
 	Size            int
 	TimestampMicros *int64
@@ -344,9 +343,10 @@ func (b *Bulk) addLaneActions(l *lane, actions []Model, ackFn func(), timestampM
 	}
 }
 
-// flushLaneLocked drains the lane's buffer into per-vbucket sub-batches and
-// dispatches them to the lane's worker queue.  Must be called with l.flushLock
-// held.
+// flushLaneLocked drains the lane's buffer, groups items by vbucket, and
+// processes each vbucket group concurrently via goroutines — bypassing the
+// lane queue entirely to avoid deadlocking runLane with itself.
+// Must be called with l.flushLock held.
 func (b *Bulk) flushLaneLocked(l *lane) {
 	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
 		return
@@ -363,41 +363,27 @@ func (b *Bulk) flushLaneLocked(l *lane) {
 	l.batchSize = 0
 	l.batchByteSize = 0
 
-	b.dispatchLaneBatchByVb(l, batchCopy)
-	b.dcpCheckpointCommit()
-}
-
-// dispatchLaneBatchByVb groups items by vbucket, sends each group to the lane
-// queue, and waits for all of them to complete before returning.
-func (b *Bulk) dispatchLaneBatchByVb(l *lane, items []BatchItem) {
-	if len(items) == 0 {
-		return
-	}
-
 	grouped := make(map[uint16][]BatchItem)
 	order := make([]uint16, 0)
-	for _, item := range items {
+	for _, item := range batchCopy {
 		if _, exists := grouped[item.VbID]; !exists {
 			order = append(order, item.VbID)
 		}
 		grouped[item.VbID] = append(grouped[item.VbID], item)
 	}
 
-	dones := make([]chan struct{}, 0, len(order))
+	var wg sync.WaitGroup
+	wg.Add(len(order))
 	for _, vbID := range order {
-		group := make([]BatchItem, len(grouped[vbID]))
-		copy(group, grouped[vbID])
-		done := make(chan struct{})
-		for i := range group {
-			group[i].Done = done
-		}
-		dones = append(dones, done)
-		l.queue <- group
+		group := grouped[vbID]
+		go func(batch []BatchItem) {
+			defer wg.Done()
+			b.processBatch(batch)
+		}(group)
 	}
+	wg.Wait()
 
-	for _, done := range dones {
-		<-done
-	}
+	b.dcpCheckpointCommit()
 }
 
 func (b *Bulk) request(item BatchItem, wg *sync.WaitGroup) {
@@ -429,23 +415,9 @@ func (b *Bulk) request(item BatchItem, wg *sync.WaitGroup) {
 
 //nolint:funlen
 func (b *Bulk) processBatch(batch []BatchItem) {
-	var doneChannel chan struct{}
-	if len(batch) > 0 {
-		doneChannel = batch[0].Done
-	}
-
 	defer func() {
 		if r := recover(); r != nil {
-			if doneChannel != nil {
-				select {
-				case <-doneChannel:
-				default:
-					close(doneChannel)
-				}
-			}
 			panic(r)
-		} else if doneChannel != nil {
-			close(doneChannel)
 		}
 	}()
 
