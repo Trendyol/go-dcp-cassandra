@@ -178,11 +178,6 @@ func (c *connector) listener(ctx *models.ListenerContext) {
 	}
 
 	actions := c.mapper(e)
-	if len(actions) == 0 {
-		ctx.Ack()
-		return
-	}
-
 	c.bulk.AddActions(ctx, e.EventTime, e.VbID, actions)
 }
 
