@@ -19,7 +19,6 @@ type Cassandra struct {
 	Keyspace          string `yaml:"keyspace"`
 	Compressor        string `yaml:"compressor"`
 	SerialConsistency string `yaml:"serialConsistency"`
-	BatchType         string `yaml:"batchType"`
 	Consistency       string `yaml:"consistency"`
 	TableName         string `yaml:"tableName"`
 	SSL               struct {
@@ -36,21 +35,20 @@ type Cassandra struct {
 		MinRetryDelay time.Duration `yaml:"minRetryDelay"`
 		MaxRetryDelay time.Duration `yaml:"maxRetryDelay"`
 	} `yaml:"retryPolicy"`
-	BatchTimeout        time.Duration `yaml:"batchTimeout"`
 	KeepAlive           time.Duration `yaml:"keepAlive"`
-	BatchByteSizeLimit  int           `yaml:"batchByteSizeLimit"`
 	Timeout             time.Duration `yaml:"timeout"`
-	MaxBatchSize        int           `yaml:"maxBatchSize"`
-	NumConns            int           `yaml:"numConns"`
 	ConnectTimeout      time.Duration `yaml:"connectTimeout"`
-	WorkerCount         int           `yaml:"workerCount"`
+	BatchTickerDuration time.Duration `yaml:"batchTickerDuration"`
+	NumConns            int           `yaml:"numConns"`
 	MaxPreparedStmts    int           `yaml:"maxPreparedStmts"`
 	MaxRoutingKeyInfo   int           `yaml:"maxRoutingKeyInfo"`
 	PageSize            int           `yaml:"pageSize"`
-	BatchTickerDuration time.Duration `yaml:"batchTickerDuration"`
 	BatchSizeLimit      int           `yaml:"batchSizeLimit"`
-	BatchSize           int           `yaml:"batchSize"`
-	UseBatch            bool          `yaml:"useBatch"`
+	BatchByteSizeLimit  int           `yaml:"batchByteSizeLimit"`
+	MaxInFlightRequests int           `yaml:"maxInFlightRequests"`
+	BatchPerEvent       bool          `yaml:"batchPerEvent"`
+	HostSelectionPolicy string        `yaml:"hostSelectionPolicy"`
+	WriteTimestamp      string        `yaml:"writeTimestamp"`
 }
 
 type Connector struct {
@@ -59,32 +57,56 @@ type Connector struct {
 }
 
 func (c *Cassandra) setDefaults() {
-	validConsistencies := map[string]bool{
-		"ANY":          true,
-		"ONE":          true,
-		"TWO":          true,
-		"THREE":        true,
-		"QUORUM":       true,
-		"ALL":          true,
-		"LOCAL_QUORUM": true,
-		"EACH_QUORUM":  true,
-		"LOCAL_ONE":    true,
-	}
+	c.setConsistencyDefault()
+	c.setBatchDefaults()
+	c.setConnectionDefaults()
+	c.setRetryDefaults()
+}
 
+func (c *Cassandra) setConsistencyDefault() {
+	validConsistencies := map[string]bool{
+		"ANY": true, "ONE": true, "TWO": true, "THREE": true,
+		"QUORUM": true, "ALL": true, "LOCAL_QUORUM": true,
+		"EACH_QUORUM": true, "LOCAL_ONE": true,
+	}
 	consistency := strings.TrimSpace(strings.ToUpper(c.Consistency))
 	if consistency == "" || !validConsistencies[consistency] {
 		c.Consistency = "QUORUM"
 	} else {
 		c.Consistency = consistency
 	}
+}
 
-	if c.BatchType == "" {
-		c.BatchType = "logged"
+func (c *Cassandra) setBatchDefaults() {
+	if c.BatchSizeLimit <= 0 {
+		c.BatchSizeLimit = 2000
 	}
-	if c.MaxBatchSize <= 0 {
-		c.MaxBatchSize = 65536
+	if c.BatchByteSizeLimit <= 0 {
+		c.BatchByteSizeLimit = 10 * 1024 * 1024 // 10MB
+	}
+	if c.BatchTickerDuration <= 0 {
+		c.BatchTickerDuration = 10 * time.Second
+	}
+	if c.MaxInFlightRequests <= 0 {
+		c.MaxInFlightRequests = 100
 	}
 
+	hostSelectionPolicy := strings.TrimSpace(strings.ToLower(c.HostSelectionPolicy))
+	if hostSelectionPolicy != "round_robin" && hostSelectionPolicy != "token_aware" {
+		c.HostSelectionPolicy = "token_aware"
+	} else {
+		c.HostSelectionPolicy = hostSelectionPolicy
+	}
+
+	writeTimestamp := strings.TrimSpace(strings.ToLower(c.WriteTimestamp))
+	if writeTimestamp != "none" && writeTimestamp != "event_time" && writeTimestamp != "now" {
+		c.WriteTimestamp = "none"
+	} else {
+		c.WriteTimestamp = writeTimestamp
+	}
+}
+
+func (c *Cassandra) setConnectionDefaults() {
 	if c.NumConns <= 0 {
 		c.NumConns = 2
 	}
@@ -100,6 +122,9 @@ func (c *Cassandra) setDefaults() {
 	if c.PageSize <= 0 {
 		c.PageSize = 5000
 	}
+}
+
+func (c *Cassandra) setRetryDefaults() {
 	if c.RetryPolicy.NumRetries <= 0 {
 		c.RetryPolicy.NumRetries = 3
 	}

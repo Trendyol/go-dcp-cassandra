@@ -61,6 +61,8 @@ func (m *enhancedMockBatch) ExecuteBatch() error {
 	return nil
 }
 
+func (m *enhancedMockBatch) WithTimestamp(int64) {}
+
 func TestSessionInterfaceImplementation(t *testing.T) {
 	var _ Session = &GocqlSessionAdapter{}
 }

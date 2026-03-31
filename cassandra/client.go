@@ -106,6 +106,13 @@ func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 		}
 	}
 
+	switch cfg.HostSelectionPolicy {
+	case "round_robin":
+		cluster.PoolConfig.HostSelectionPolicy = gocql.RoundRobinHostPolicy()
+	default:
+		cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.RoundRobinHostPolicy())
+	}
+
 	session, err := cluster.CreateSession()
 	if err != nil {
 		log.Printf("Failed to create Cassandra session: %v", err)
