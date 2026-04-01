@@ -103,8 +103,8 @@ func TestCassandra_SetDefaults_ConnectionPooling(t *testing.T) {
 	cassandra := Cassandra{}
 	cassandra.setDefaults()
 
-	// Test connection pooling defaults
 	assert.Equal(t, 2, cassandra.NumConns)
+	assert.Equal(t, 10*time.Second, cassandra.Timeout)
 	assert.Equal(t, 5*time.Second, cassandra.ConnectTimeout)
 	assert.Equal(t, 30*time.Second, cassandra.KeepAlive)
 	assert.Equal(t, 1000, cassandra.MaxPreparedStmts)

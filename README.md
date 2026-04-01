@@ -183,6 +183,21 @@ Check out on [go-dcp](https://github.com/Trendyol/go-dcp#configuration)
 | `cassandra.hostSelectionPolicy`     | string                   | no       | token_aware  | `token_aware` (default) or `round_robin`                                                                                                             |
 | `cassandra.consistency`             | string                   | no       | QUORUM       | Cassandra consistency level                                                                                                                          |
 | `cassandra.tableName`               | string                   | no       |              | Target table name (used when no collection mapping is configured)                                                                                    |
+| `cassandra.numConns`                | int                      | no       | 2            | Number of connections per Cassandra host                                                                                                             |
+| `cassandra.connectTimeout`          | time.Duration            | no       | 5s           | Cassandra initial connection timeout                                                                                                                 |
+| `cassandra.keepAlive`               | time.Duration            | no       | 30s          | TCP keep-alive interval                                                                                                                              |
+| `cassandra.maxPreparedStmts`        | int                      | no       | 1000         | Maximum number of prepared statements cached by the driver                                                                                           |
+| `cassandra.pageSize`                | int                      | no       | 5000         | Default page size for queries                                                                                                                        |
+| `cassandra.serialConsistency`       | string                   | no       |              | Serial consistency level for LWT (e.g. `SERIAL`, `LOCAL_SERIAL`)                                                                                    |
+| `cassandra.compressor`              | string                   | no       |              | Compression algorithm (`snappy` or `lz4`)                                                                                                            |
+| `cassandra.retryPolicy.numRetries`  | int                      | no       | 3            | Number of retries on Cassandra write failure                                                                                                         |
+| `cassandra.retryPolicy.minRetryDelay` | time.Duration          | no       | 100ms        | Minimum delay between retries                                                                                                                        |
+| `cassandra.retryPolicy.maxRetryDelay` | time.Duration          | no       | 1s           | Maximum delay between retries                                                                                                                        |
+| `cassandra.ssl.enable`              | bool                     | no       | false        | Enable TLS/SSL connection to Cassandra                                                                                                               |
+| `cassandra.ssl.certPath`            | string                   | no       |              | Path to client certificate file                                                                                                                      |
+| `cassandra.ssl.keyPath`             | string                   | no       |              | Path to client private key file                                                                                                                      |
+| `cassandra.ssl.caPath`              | string                   | no       |              | Path to CA certificate file                                                                                                                          |
+| `cassandra.ssl.insecureSkipVerify`  | bool                     | no       | false        | Skip server certificate verification (not recommended for production)                                                                                |
 | `cassandra.collectionTableMapping`  | []CollectionTableMapping | no       |              | Used by the default mapper. See next section                                                                                                         |
 
 ### Collection Table Mapping Configuration
@@ -235,6 +250,8 @@ The resulting Cassandra row will have:
 |-----------------------------------------------|-------------------------------|--------|------------|
 | go_dcp_cassandra_connector_latency_ms_current | Time to adding to the batch.  | N/A    | Gauge      |
 | go_dcp_cassandra_connector_bulk_request_process_latency_ms_current | Time to process bulk request. | N/A    | Gauge      |
+| go_dcp_cassandra_connector_bulk_request_size_current | Number of items in the last flush. | N/A | Gauge |
+| go_dcp_cassandra_connector_bulk_request_byte_size_current | Byte size of the last flush. | N/A | Gauge |
 
 You can also use all DCP-related metrics explained [here](https://github.com/Trendyol/go-dcp#exposed-metrics).
 All DCP-related metrics are automatically injected. It means you don't need to do anything.
