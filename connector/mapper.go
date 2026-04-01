@@ -28,7 +28,8 @@ func DefaultMapper(event couchbase.Event) []cassandra.Model {
 		mapping := findCollectionTableMapping(event.CollectionName)
 		model := buildUpsertModel(mapping, event)
 		return []cassandra.Model{&model}
-	} else if event.IsDeleted || event.IsExpired {
+	}
+	if event.IsDeleted || event.IsExpired {
 		mapping := findCollectionTableMapping(event.CollectionName)
 		model := buildDeleteModel(mapping, event)
 		return []cassandra.Model{&model}
@@ -62,64 +63,59 @@ func findCollectionTableMapping(collectionName string) config.CollectionTableMap
 	panic(fmt.Sprintf("no mapping found for collection: %s", collectionName))
 }
 
-func getNestedField(document map[string]interface{}, fieldPath string) (interface{}, bool) {
-	if strings.Contains(fieldPath, ".") {
-		parts := strings.Split(fieldPath, ".")
-		current := document
+func getNestedField(document map[string]any, fieldPath string) (any, bool) {
+	if !strings.Contains(fieldPath, ".") {
+		value, exists := document[fieldPath]
+		return value, exists
+	}
 
-		for i, part := range parts {
-			if i == len(parts)-1 {
-				if value, exists := current[part]; exists {
-					return value, true
-				}
-				return nil, false
-			} else {
-				if value, exists := current[part]; exists {
-					if nested, ok := value.(map[string]interface{}); ok {
-						current = nested
-					} else {
-						return nil, false
-					}
-				} else {
-					return nil, false
-				}
-			}
+	parts := strings.Split(fieldPath, ".")
+	current := document
+	for _, part := range parts[:len(parts)-1] {
+		value, exists := current[part]
+		if !exists {
+			return nil, false
 		}
+		nested, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = nested
 	}
 
-	if value, exists := document[fieldPath]; exists {
-		return value, true
-	}
-	return nil, false
+	value, exists := current[parts[len(parts)-1]]
+	return value, exists
 }
 
-func convertFieldValue(fieldPath string, value interface{}) interface{} {
-	if fieldPath == "date" {
-		switch v := value.(type) {
-		case float64:
-			return v
-		case string:
-			if parsed, err := strconv.ParseFloat(v, 64); err == nil {
-				return parsed
-			}
-			return 0.0
-		case int:
-			return float64(v)
-		case int64:
-			return float64(v)
-		}
+func convertFieldValue(fieldPath string, value any) any {
+	if fieldPath != "date" {
+		return value
 	}
 
-	return value
+	switch v := value.(type) {
+	case float64:
+		return v
+	case string:
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+			return parsed
+		}
+		return 0.0
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	default:
+		return value
+	}
 }
 
 func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Event) cassandra.Raw {
-	var sourceDocument map[string]interface{}
+	var sourceDocument map[string]any
 	if err := json.Unmarshal(event.Value, &sourceDocument); err != nil {
-		sourceDocument = make(map[string]interface{})
+		sourceDocument = make(map[string]any)
 	}
 
-	targetDocument := make(map[string]interface{})
+	targetDocument := make(map[string]any)
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
 		switch sourceField {
@@ -144,7 +140,7 @@ func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Eve
 }
 
 func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Event) cassandra.Raw {
-	var sourceDocument map[string]interface{}
+	var sourceDocument map[string]any
 	if event.Value != nil {
 		err := json.Unmarshal(event.Value, &sourceDocument)
 		if err != nil {
@@ -152,10 +148,10 @@ func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Eve
 		}
 	}
 	if sourceDocument == nil {
-		sourceDocument = make(map[string]interface{})
+		sourceDocument = make(map[string]any)
 	}
 
-	filter := make(map[string]interface{})
+	filter := make(map[string]any)
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
 		switch sourceField {

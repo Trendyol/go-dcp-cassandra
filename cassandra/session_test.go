@@ -14,13 +14,13 @@ type enhancedMockSession struct {
 	newBatchCallCount      int
 }
 
-func (m *enhancedMockSession) Query(stmt string, values ...interface{}) Query {
+func (m *enhancedMockSession) Query(stmt string, values ...any) Query {
 	m.queryCallCount++
 	m.queries = append(m.queries, stmt)
 	return &enhancedMockQuery{}
 }
 
-func (m *enhancedMockSession) PreparedQuery(stmt string, values ...interface{}) Query {
+func (m *enhancedMockSession) PreparedQuery(stmt string, values ...any) Query {
 	m.preparedQueryCallCount++
 	m.preparedQueries = append(m.preparedQueries, stmt)
 	return &enhancedMockQuery{}
@@ -48,7 +48,7 @@ type enhancedMockBatch struct {
 	size      int
 }
 
-func (m *enhancedMockBatch) Query(stmt string, values ...interface{}) {
+func (m *enhancedMockBatch) Query(stmt string, values ...any) {
 	m.queries = append(m.queries, stmt)
 	m.size++
 }

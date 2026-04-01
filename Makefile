@@ -1,4 +1,4 @@
-GO_TOOLCHAIN ?= go1.24.13
+GO_TOOLCHAIN ?= go1.26
 BIN_DIR ?= ./bin
 
 .PHONY: build
@@ -9,6 +9,7 @@ build:
 tools:
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.3.0
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install golang.org/x/tools/go/analysis/passes/fieldalignment/cmd/fieldalignment@v0.35.0
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install golang.org/x/vuln/cmd/govulncheck@latest
 
 .PHONY: clean
 clean:
@@ -25,7 +26,7 @@ lint: tools
 
 .PHONY: test
 test:
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test ./...
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test -race ./...
 
 .PHONY: bench
 bench:
@@ -44,3 +45,11 @@ compose:
 tidy:
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) go mod tidy
 	cd example/simple && GOTOOLCHAIN=$(GO_TOOLCHAIN) go mod tidy && cd ../..
+
+.PHONY: modernize
+modernize:
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go fix ./...
+
+.PHONY: vulncheck
+vulncheck:
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) govulncheck ./...

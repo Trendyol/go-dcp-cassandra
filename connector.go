@@ -69,11 +69,9 @@ func newConnector(cf any, mapper Mapper) (Connector, error) {
 	}
 	cfg.ApplyDefaults()
 
-	var finalMapper Mapper
+	finalMapper := mapper
 	if len(cfg.Cassandra.CollectionTableMapping) > 0 {
 		finalMapper = connectorpkg.DefaultMapper
-	} else {
-		finalMapper = mapper
 	}
 
 	conn := &connector{
@@ -117,7 +115,7 @@ func NewConnectorBuilder(config any) ConnectorBuilder {
 func SimpleDefaultMapper(event couchbase.Event) []cassandra.Model {
 	raw := cassandra.Raw{
 		Table: "example_table",
-		Document: map[string]interface{}{
+		Document: map[string]any{
 			"key":  string(event.Key),
 			"data": string(event.Value),
 		},
@@ -171,7 +169,7 @@ func (c *connector) listener(ctx *models.ListenerContext) {
 	case models.DcpExpiration:
 		e = couchbase.NewExpireEvent(event.Key, nil, event.CollectionName, event.EventTime, event.Cas, event.VbID)
 	case models.DcpDeletion:
-		e = couchbase.NewDeleteEvent(event.Key, nil, event.CollectionName, event.EventTime, event.Cas, event.VbID)
+		e = couchbase.NewDeleteEvent(event.Key, event.Value, event.CollectionName, event.EventTime, event.Cas, event.VbID)
 	default:
 		ctx.Ack()
 		return

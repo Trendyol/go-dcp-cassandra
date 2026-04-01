@@ -2,7 +2,7 @@ package cassandra
 
 import (
 	"crypto/tls"
-	"log"
+	"log/slog"
 
 	"github.com/gocql/gocql"
 
@@ -87,7 +87,7 @@ func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 	case "snappy":
 		cluster.Compressor = gocql.SnappyCompressor{}
 	case "lz4":
-		log.Println("LZ4 compression is not available in standard gocql, using snappy instead")
+		slog.Warn("LZ4 compression not available in standard gocql, using snappy instead")
 		cluster.Compressor = gocql.SnappyCompressor{}
 	default:
 	}
@@ -98,7 +98,7 @@ func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 		}
 
 		if cfg.SSL.CertPath != "" || cfg.SSL.KeyPath != "" || cfg.SSL.CaPath != "" {
-			log.Printf("Custom SSL certificate configuration is not fully implemented yet")
+			slog.Warn("custom SSL certificate configuration not fully implemented yet")
 		}
 
 		cluster.SslOpts = &gocql.SslOptions{
@@ -115,7 +115,7 @@ func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 
 	session, err := cluster.CreateSession()
 	if err != nil {
-		log.Printf("Failed to create Cassandra session: %v", err)
+		slog.Error("failed to create cassandra session", "error", err)
 		return nil, err
 	}
 	return NewGocqlSessionAdapter(session), nil

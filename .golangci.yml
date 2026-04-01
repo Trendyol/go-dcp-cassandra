@@ -16,6 +16,8 @@ linters:
     - misspell
     - nakedret
     - prealloc
+    - gosec
+    - nilerr
     - staticcheck
     - unconvert
     - unparam
