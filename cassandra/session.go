@@ -1,8 +1,6 @@
 package cassandra
 
 import (
-	"sync"
-
 	"github.com/gocql/gocql"
 )
 
@@ -15,8 +13,8 @@ const (
 )
 
 type Session interface {
-	Query(string, ...interface{}) Query
-	PreparedQuery(string, ...interface{}) Query
+	Query(string, ...any) Query
+	PreparedQuery(string, ...any) Query
 	NewBatch(BatchType) Batch
 	Close()
 }
@@ -26,7 +24,7 @@ type Query interface {
 }
 
 type Batch interface {
-	Query(string, ...interface{})
+	Query(string, ...any)
 	WithTimestamp(int64)
 	Size() int
 	ExecuteBatch() error
@@ -34,40 +32,18 @@ type Batch interface {
 
 type GocqlSessionAdapter struct {
 	*gocql.Session
-	preparedStmts map[string]*gocql.Query
-	mutex         sync.RWMutex
 }
 
 func NewGocqlSessionAdapter(session *gocql.Session) *GocqlSessionAdapter {
-	return &GocqlSessionAdapter{
-		Session:       session,
-		preparedStmts: make(map[string]*gocql.Query),
-		mutex:         sync.RWMutex{},
-	}
+	return &GocqlSessionAdapter{Session: session}
 }
 
-func (s *GocqlSessionAdapter) Query(stmt string, values ...interface{}) Query {
+func (s *GocqlSessionAdapter) Query(stmt string, values ...any) Query {
 	return &GocqlQueryAdapter{q: s.Session.Query(stmt, values...)}
 }
 
-func (s *GocqlSessionAdapter) PreparedQuery(stmt string, values ...interface{}) Query {
-	s.mutex.RLock()
-	if preparedQuery, exists := s.preparedStmts[stmt]; exists {
-		s.mutex.RUnlock()
-		return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
-	}
-	s.mutex.RUnlock()
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if preparedQuery, exists := s.preparedStmts[stmt]; exists {
-		return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
-	}
-
-	preparedQuery := s.Session.Query(stmt)
-	s.preparedStmts[stmt] = preparedQuery
-	return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
+func (s *GocqlSessionAdapter) PreparedQuery(stmt string, values ...any) Query {
+	return &GocqlQueryAdapter{q: s.Session.Query(stmt, values...)}
 }
 
 func (s *GocqlSessionAdapter) NewBatch(batchType BatchType) Batch {
@@ -102,7 +78,7 @@ type GocqlBatchAdapter struct {
 	session *gocql.Session
 }
 
-func (b *GocqlBatchAdapter) Query(stmt string, values ...interface{}) {
+func (b *GocqlBatchAdapter) Query(stmt string, values ...any) {
 	b.batch.Query(stmt, values...)
 }
 

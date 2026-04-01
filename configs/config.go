@@ -110,6 +110,9 @@ func (c *Cassandra) setConnectionDefaults() {
 	if c.NumConns <= 0 {
 		c.NumConns = 2
 	}
+	if c.Timeout <= 0 {
+		c.Timeout = 10 * time.Second
+	}
 	if c.ConnectTimeout <= 0 {
 		c.ConnectTimeout = 5 * time.Second
 	}

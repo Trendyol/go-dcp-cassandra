@@ -2,8 +2,9 @@ package cassandra
 
 import (
 	"fmt"
-	"log"
-	"sort"
+	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,9 +36,10 @@ type Bulk struct {
 	preparedStmtsMutex  sync.RWMutex
 	// flushDone is closed when the current in-flight flush completes.
 	// A new channel is created for each flush. Enforces single flush at a time.
-	flushDone           chan struct{}
-	flushMu             sync.Mutex
-	batchTicker         *time.Ticker
+	flushDone      chan struct{}
+	flushMu        sync.Mutex
+	shutdownDoneCh chan struct{}
+	batchTicker    *time.Ticker
 	batchTickerDuration time.Duration
 	isDcpRebalancing    int32
 	eventCounter        int64
@@ -55,10 +57,6 @@ const (
 	writeTimestampEventTime = "event_time"
 	writeTimestampNow       = "now"
 )
-
-type Mapper func(event interface{}) []Model
-
-type BulkBuilder struct{}
 
 type Metric struct {
 	ProcessLatencyMs            int64
@@ -82,6 +80,7 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 		keyspace:            cfg.Cassandra.Keyspace,
 		dcpCheckpointCommit: dcpCheckpointCommit,
 		shutdownCh:          make(chan struct{}),
+		shutdownDoneCh:      make(chan struct{}),
 		metric:              &Metric{},
 		preparedStmts:       make(map[string]string),
 		batchBuffer:         make([]BatchItem, 0, cfg.Cassandra.BatchSizeLimit),
@@ -100,6 +99,7 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 
 // StartBulk runs the ticker-driven flush loop. Blocks until Close is called.
 func (b *Bulk) StartBulk() {
+	defer close(b.shutdownDoneCh)
 	for {
 		select {
 		case <-b.batchTicker.C:
@@ -124,16 +124,17 @@ func (b *Bulk) StartBulk() {
 
 func (b *Bulk) Close() {
 	close(b.shutdownCh)
+	<-b.shutdownDoneCh
 	b.session.Close()
 }
 
 func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, actions []Model) {
 	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
-		log.Printf("could not add new message to batch while rebalancing")
+		slog.Warn("could not add new message to batch while rebalancing")
 		return
 	}
 
-	b.metric.ProcessLatencyMs = time.Since(eventTime).Milliseconds()
+	atomic.StoreInt64(&b.metric.ProcessLatencyMs, time.Since(eventTime).Milliseconds())
 
 	if len(actions) == 0 {
 		return
@@ -258,8 +259,8 @@ func (b *Bulk) runFlush(batch []BatchItem, thisDone chan struct{}) {
 
 	b.dcpCheckpointCommit()
 
-	b.metric.BulkRequestSize = int64(len(batch))
-	b.metric.BulkRequestProcessLatencyMs = time.Since(startedTime).Milliseconds()
+	atomic.StoreInt64(&b.metric.BulkRequestSize, int64(len(batch)))
+	atomic.StoreInt64(&b.metric.BulkRequestProcessLatencyMs, time.Since(startedTime).Milliseconds())
 }
 
 // writeConcurrently writes all items independently with a semaphore bounding
@@ -432,7 +433,7 @@ func estimateSize(model Model) int {
 	return size
 }
 
-func estimateValueSize(v interface{}) int {
+func estimateValueSize(v any) int {
 	switch val := v.(type) {
 	case string:
 		return len(val)
@@ -441,17 +442,6 @@ func estimateValueSize(v interface{}) int {
 	default:
 		return 8
 	}
-}
-
-func join(arr []string, sep string) string {
-	result := ""
-	for i, s := range arr {
-		if i > 0 {
-			result += sep
-		}
-		result += s
-	}
-	return result
 }
 
 func (b *Bulk) PrepareStartRebalancing() {
@@ -469,7 +459,12 @@ func (b *Bulk) GetMetric() *Metric {
 	if b.metric == nil {
 		return &Metric{}
 	}
-	return b.metric
+	return &Metric{
+		ProcessLatencyMs:            atomic.LoadInt64(&b.metric.ProcessLatencyMs),
+		BulkRequestProcessLatencyMs: atomic.LoadInt64(&b.metric.BulkRequestProcessLatencyMs),
+		BulkRequestSize:             atomic.LoadInt64(&b.metric.BulkRequestSize),
+		BulkRequestByteSize:         atomic.LoadInt64(&b.metric.BulkRequestByteSize),
+	}
 }
 
 //nolint:funlen
@@ -499,7 +494,7 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 			placeholders[i] = "?"
 		}
 		query = fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)",
-			b.keyspace, raw.Table, join(columns, ","), join(placeholders, ","))
+			b.keyspace, raw.Table, strings.Join(columns, ","), strings.Join(placeholders, ","))
 		if hasTS {
 			query += " USING TIMESTAMP ?"
 		}
@@ -516,10 +511,10 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 		}
 		if hasTS {
 			query = fmt.Sprintf("UPDATE %s.%s USING TIMESTAMP ? SET %s WHERE %s",
-				b.keyspace, raw.Table, join(setParts, ","), join(whereParts, " AND "))
+				b.keyspace, raw.Table, strings.Join(setParts, ","), strings.Join(whereParts, " AND "))
 		} else {
 			query = fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s",
-				b.keyspace, raw.Table, join(setParts, ","), join(whereParts, " AND "))
+				b.keyspace, raw.Table, strings.Join(setParts, ","), strings.Join(whereParts, " AND "))
 		}
 	case "DELETE":
 		filterColumns := sortedKeys(raw.Filter)
@@ -529,10 +524,10 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 		}
 		if hasTS {
 			query = fmt.Sprintf("DELETE FROM %s.%s USING TIMESTAMP ? WHERE %s",
-				b.keyspace, raw.Table, join(whereParts, " AND "))
+				b.keyspace, raw.Table, strings.Join(whereParts, " AND "))
 		} else {
 			query = fmt.Sprintf("DELETE FROM %s.%s WHERE %s",
-				b.keyspace, raw.Table, join(whereParts, " AND "))
+				b.keyspace, raw.Table, strings.Join(whereParts, " AND "))
 		}
 	}
 
@@ -540,7 +535,7 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 	return query
 }
 
-func (b *Bulk) buildQueryAndValues(raw *Raw) (string, []interface{}) {
+func (b *Bulk) buildQueryAndValues(raw *Raw) (string, []any) {
 	hasTS := raw.Timestamp > 0
 	switch raw.Operation {
 	case Insert, Upsert:
@@ -554,12 +549,11 @@ func (b *Bulk) buildQueryAndValues(raw *Raw) (string, []interface{}) {
 	}
 }
 
-func (b *Bulk) buildInsertValues(raw *Raw, hasTS bool) (string, []interface{}) {
-	cacheKey := fmt.Sprintf("INSERT:%s:%d:%v", raw.Table, len(raw.Document), hasTS)
-	query := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
-
+func (b *Bulk) buildInsertValues(raw *Raw, hasTS bool) (string, []any) {
 	columns := sortedKeys(raw.Document)
-	values := make([]interface{}, 0, len(columns)+1)
+	cacheKey := fmt.Sprintf("INSERT:%s:%s:%v", raw.Table, strings.Join(columns, ","), hasTS)
+	query := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
+	values := make([]any, 0, len(columns)+1)
 	for _, col := range columns {
 		values = append(values, raw.Document[col])
 	}
@@ -569,13 +563,12 @@ func (b *Bulk) buildInsertValues(raw *Raw, hasTS bool) (string, []interface{}) {
 	return query, values
 }
 
-func (b *Bulk) buildUpdateValues(raw *Raw, hasTS bool) (string, []interface{}) {
-	cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d:%v", raw.Table, len(raw.Document), len(raw.Filter), hasTS)
-	query := b.getCachedPreparedStatement(cacheKey, raw, "UPDATE")
-
+func (b *Bulk) buildUpdateValues(raw *Raw, hasTS bool) (string, []any) {
 	docColumns := sortedKeys(raw.Document)
 	filterColumns := sortedKeys(raw.Filter)
-	values := make([]interface{}, 0, len(docColumns)+len(filterColumns)+1)
+	cacheKey := fmt.Sprintf("UPDATE:%s:%s:%s:%v", raw.Table, strings.Join(docColumns, ","), strings.Join(filterColumns, ","), hasTS)
+	query := b.getCachedPreparedStatement(cacheKey, raw, "UPDATE")
+	values := make([]any, 0, len(docColumns)+len(filterColumns)+1)
 
 	if hasTS {
 		values = append(values, raw.Timestamp)
@@ -589,12 +582,11 @@ func (b *Bulk) buildUpdateValues(raw *Raw, hasTS bool) (string, []interface{}) {
 	return query, values
 }
 
-func (b *Bulk) buildDeleteValues(raw *Raw, hasTS bool) (string, []interface{}) {
-	cacheKey := fmt.Sprintf("DELETE:%s:%d:%v", raw.Table, len(raw.Filter), hasTS)
-	query := b.getCachedPreparedStatement(cacheKey, raw, "DELETE")
-
+func (b *Bulk) buildDeleteValues(raw *Raw, hasTS bool) (string, []any) {
 	filterColumns := sortedKeys(raw.Filter)
-	values := make([]interface{}, 0, len(filterColumns)+1)
+	cacheKey := fmt.Sprintf("DELETE:%s:%s:%v", raw.Table, strings.Join(filterColumns, ","), hasTS)
+	query := b.getCachedPreparedStatement(cacheKey, raw, "DELETE")
+	values := make([]any, 0, len(filterColumns)+1)
 
 	if hasTS {
 		values = append(values, raw.Timestamp)
@@ -605,11 +597,11 @@ func (b *Bulk) buildDeleteValues(raw *Raw, hasTS bool) (string, []interface{}) {
 	return query, values
 }
 
-func sortedKeys(m map[string]interface{}) []string {
+func sortedKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
