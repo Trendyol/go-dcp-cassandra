@@ -41,6 +41,12 @@ build-example:
 compose:
 	docker compose up --wait --build --force-recreate --remove-orphans
 
+.PHONY: test-integration
+test-integration:
+	docker compose -f test/integration/docker-compose.yml up -d --wait
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test -race -v -timeout 5m ./test/integration/...
+	docker compose -f test/integration/docker-compose.yml down
+
 .PHONY: tidy
 tidy:
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) go mod tidy

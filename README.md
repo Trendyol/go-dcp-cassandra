@@ -204,11 +204,12 @@ Check out on [go-dcp](https://github.com/Trendyol/go-dcp#configuration)
 
 Collection table mapping configuration is optional. This configuration should only be provided if you are using the default mapper. If you are implementing your own custom mapper function, this configuration is not needed.
 
-| Variable                                                 | Type    | Required | Default | Description                                                                  |
-|----------------------------------------------------------|---------|----------|---------|------------------------------------------------------------------------------|
-| `cassandra.collectionTableMapping[].collection`          | string  | yes      |         | Couchbase collection name                                                    |
-| `cassandra.collectionTableMapping[].tableName`           | string  | yes      |         | Target Cassandra table name                                                  |
-| `cassandra.collectionTableMapping[].fieldMappings`       | map     | yes      |         | Mapping between Cassandra columns and JSON document fields. Key is Cassandra column name, value is source field name. Special values: "id" for document key, "documentData" for full JSON document |
+| Variable                                                 | Type     | Required | Default | Description                                                                  |
+|----------------------------------------------------------|----------|----------|---------|------------------------------------------------------------------------------|
+| `cassandra.collectionTableMapping[].collection`          | string   | yes      |         | Couchbase collection name. Use `_default` as a catch-all fallback            |
+| `cassandra.collectionTableMapping[].tableName`           | string   | yes      |         | Target Cassandra table name                                                  |
+| `cassandra.collectionTableMapping[].fieldMappings`       | map      | yes      |         | Mapping between Cassandra columns and JSON document fields. Key is Cassandra column name, value is source field name. Special values: `_key` for document key, `documentData` for full JSON document. Supports nested fields with dot notation (e.g. `profile.contact.email`) |
+| `cassandra.collectionTableMapping[].primaryKeyFields`    | []string | no       |         | Cassandra column names that form the primary key. When set, DELETE operations only include these columns in the WHERE clause — reducing tombstone accumulation |
 
 #### Field Mappings Example
 
@@ -218,22 +219,29 @@ Given a Couchbase document:
   "userId": "user123",
   "name": "John Doe",
   "email": "john@example.com",
-  "metadata": {
-    "createdAt": "2024-01-01T00:00:00Z",
-    "version": 1
+  "profile": {
+    "contact": {
+      "phone": "+1234567890"
+    }
   }
 }
 ```
 
-And field mappings:
+And configuration:
 ```yaml
-fieldMappings:
-  id: "id"              # Document key → id column
-  user_id: "userId"     # JSON field userId → user_id column
-  full_name: "name"     # JSON field name → full_name column
-  email_address: "email" # JSON field email → email_address column
-  raw_data: "documentData" # Full JSON document → raw_data column
-  meta_info: "metadata"  # JSON field metadata → meta_info column
+collectionTableMapping:
+  - collection: users
+    tableName: users
+    primaryKeyFields:
+      - id
+      - user_id
+    fieldMappings:
+      id: "_key"                      # Document key → id column
+      user_id: "userId"               # JSON field userId → user_id column
+      full_name: "name"               # JSON field name → full_name column
+      email_address: "email"          # JSON field email → email_address column
+      phone: "profile.contact.phone"  # Nested field → phone column
+      raw_data: "documentData"        # Full JSON document → raw_data column
 ```
 
 The resulting Cassandra row will have:
@@ -241,10 +249,37 @@ The resulting Cassandra row will have:
 - `user_id`: "user123"
 - `full_name`: "John Doe"
 - `email_address`: "john@example.com"
+- `phone`: "+1234567890" (extracted from nested path)
 - `raw_data`: Full JSON string
-- `meta_info`: {"createdAt": "2024-01-01T00:00:00Z", "version": 1}
 
-## Exposed metrics
+On **deletion**, only `id` and `user_id` (the `primaryKeyFields`) are included in the DELETE WHERE clause — preventing tombstone accumulation from nulled non-key columns.
+
+## Observability
+
+### Tracing (OpenTelemetry)
+
+The connector instruments key operations with [OpenTelemetry](https://opentelemetry.io/) spans:
+
+| Span Name | Description |
+|-----------|-------------|
+| `cassandra.connect` | Session creation including cluster discovery |
+| `cassandra.flush` | Full flush cycle (all writes + ack + commit) |
+| `cassandra.write` | Individual prepared statement execution |
+| `cassandra.batch` | CQL UNLOGGED BATCH execution (when `batchPerEvent: true`) |
+
+Spans are **no-op by default** — there is zero overhead unless you configure a `TracerProvider` in your application. To enable tracing, configure an OTel exporter (Jaeger, OTLP, etc.) before starting the connector:
+
+```go
+import "go.opentelemetry.io/otel"
+
+// Set up your TracerProvider (e.g. OTLP exporter)
+otel.SetTracerProvider(yourProvider)
+
+// Start the connector — spans are now exported automatically
+connector.Start()
+```
+
+### Metrics (Prometheus)
 
 | Metric Name                                   | Description                   | Labels | Value Type |
 |-----------------------------------------------|-------------------------------|--------|------------|
@@ -264,6 +299,24 @@ All DCP-related metrics are automatically injected. It means you don't need to d
 - Document parsing errors
 - Timeout errors
 - Network connection issues
+
+## Running Integration Tests
+
+Integration tests verify end-to-end behavior against a real Cassandra instance:
+
+```bash
+make test-integration
+```
+
+This command starts a Cassandra container via Docker Compose, runs the test suite with race detection, and tears down the container when done. No manual setup required.
+
+If you prefer to run the steps manually:
+
+```bash
+docker compose -f test/integration/docker-compose.yml up -d --wait
+go test -race -v -timeout 5m ./test/integration/...
+docker compose -f test/integration/docker-compose.yml down
+```
 
 ## Contributing
 
