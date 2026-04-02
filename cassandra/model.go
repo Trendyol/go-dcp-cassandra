@@ -15,19 +15,19 @@ type Model interface {
 
 type Raw struct {
 	Table     string
-	Document  map[string]any
 	Operation OperationType
+	ID        string
+	Document  map[string]any
 	Filter    map[string]any
 	RowKey    map[string]any
-	ID        string
 	Timestamp int64
 }
 
 type ExecArgs struct {
-	Document  map[string]any
-	Filter    map[string]any
 	Table     string
 	Operation OperationType
+	Document  map[string]any
+	Filter    map[string]any
 }
 
 func (r *Raw) Convert() *ExecArgs {

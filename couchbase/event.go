@@ -3,10 +3,10 @@ package couchbase
 import "time"
 
 type Event struct {
-	CollectionName string
 	EventTime      time.Time
 	Key            []byte
 	Value          []byte
+	CollectionName string
 	Cas            uint64
 	VbID           uint16
 	IsDeleted      bool

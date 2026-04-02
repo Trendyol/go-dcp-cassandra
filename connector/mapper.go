@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Trendyol/go-dcp-cassandra/cassandra"
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
@@ -16,9 +17,12 @@ type Mapper func(event couchbase.Event) []cassandra.Model
 var (
 	collectionTableMappings *[]config.CollectionTableMapping
 	mappingCache            = make(map[string]config.CollectionTableMapping)
+	mappingCacheMu          sync.RWMutex
 )
 
 func SetCollectionTableMappings(mappings *[]config.CollectionTableMapping) {
+	mappingCacheMu.Lock()
+	defer mappingCacheMu.Unlock()
 	collectionTableMappings = mappings
 	mappingCache = make(map[string]config.CollectionTableMapping)
 }
@@ -38,6 +42,16 @@ func DefaultMapper(event couchbase.Event) []cassandra.Model {
 }
 
 func findCollectionTableMapping(collectionName string) config.CollectionTableMapping {
+	mappingCacheMu.RLock()
+	if mapping, exists := mappingCache[collectionName]; exists {
+		mappingCacheMu.RUnlock()
+		return mapping
+	}
+	mappingCacheMu.RUnlock()
+
+	mappingCacheMu.Lock()
+	defer mappingCacheMu.Unlock()
+
 	if mapping, exists := mappingCache[collectionName]; exists {
 		return mapping
 	}
@@ -64,15 +78,14 @@ func findCollectionTableMapping(collectionName string) config.CollectionTableMap
 }
 
 func getNestedField(document map[string]any, fieldPath string) (any, bool) {
-	if !strings.Contains(fieldPath, ".") {
-		value, exists := document[fieldPath]
-		return value, exists
-	}
-
-	parts := strings.Split(fieldPath, ".")
 	current := document
-	for _, part := range parts[:len(parts)-1] {
-		value, exists := current[part]
+	for {
+		key, rest, hasDot := strings.Cut(fieldPath, ".")
+		if !hasDot {
+			value, exists := current[key]
+			return value, exists
+		}
+		value, exists := current[key]
 		if !exists {
 			return nil, false
 		}
@@ -81,10 +94,8 @@ func getNestedField(document map[string]any, fieldPath string) (any, bool) {
 			return nil, false
 		}
 		current = nested
+		fieldPath = rest
 	}
-
-	value, exists := current[parts[len(parts)-1]]
-	return value, exists
 }
 
 func convertFieldValue(fieldPath string, value any) any {
@@ -115,7 +126,7 @@ func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Eve
 		sourceDocument = make(map[string]any)
 	}
 
-	targetDocument := make(map[string]any)
+	targetDocument := make(map[string]any, len(mapping.FieldMappings))
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
 		switch sourceField {
@@ -151,9 +162,19 @@ func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Eve
 		sourceDocument = make(map[string]any)
 	}
 
-	filter := make(map[string]any)
+	fieldsForFilter := mapping.FieldMappings
+	if len(mapping.PrimaryKeyFields) > 0 {
+		fieldsForFilter = make(map[string]string, len(mapping.PrimaryKeyFields))
+		for _, pk := range mapping.PrimaryKeyFields {
+			if source, ok := mapping.FieldMappings[pk]; ok {
+				fieldsForFilter[pk] = source
+			}
+		}
+	}
 
-	for cassandraColumn, sourceField := range mapping.FieldMappings {
+	filter := make(map[string]any, len(fieldsForFilter))
+
+	for cassandraColumn, sourceField := range fieldsForFilter {
 		switch sourceField {
 		case "_key":
 			filter[cassandraColumn] = string(event.Key)

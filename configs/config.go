@@ -8,9 +8,10 @@ import (
 )
 
 type CollectionTableMapping struct {
-	FieldMappings map[string]string `yaml:"fieldMappings"`
-	Collection    string            `yaml:"collection"`
-	TableName     string            `yaml:"tableName"`
+	FieldMappings    map[string]string `yaml:"fieldMappings"`
+	Collection       string            `yaml:"collection"`
+	TableName        string            `yaml:"tableName"`
+	PrimaryKeyFields []string          `yaml:"primaryKeyFields,omitempty"`
 }
 
 type Cassandra struct {
@@ -46,9 +47,9 @@ type Cassandra struct {
 	BatchSizeLimit      int           `yaml:"batchSizeLimit"`
 	BatchByteSizeLimit  int           `yaml:"batchByteSizeLimit"`
 	MaxInFlightRequests int           `yaml:"maxInFlightRequests"`
-	BatchPerEvent       bool          `yaml:"batchPerEvent"`
 	HostSelectionPolicy string        `yaml:"hostSelectionPolicy"`
 	WriteTimestamp      string        `yaml:"writeTimestamp"`
+	BatchPerEvent       bool          `yaml:"batchPerEvent"`
 }
 
 type Connector struct {

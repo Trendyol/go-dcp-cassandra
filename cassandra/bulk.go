@@ -25,31 +25,31 @@ type BatchItem struct {
 }
 
 type Bulk struct {
+	preparedStmtsMutex  sync.RWMutex
+	batchBuffer         []BatchItem
 	session             Session
+	keyspace            string
+	writeTimestamp      string
 	dcpCheckpointCommit func()
 	preparedStmts       map[string]string
 	metric              *Metric
 	shutdownCh          chan struct{}
-	keyspace            string
-	batchBuffer         []BatchItem
 	batchMutex          sync.Mutex
-	preparedStmtsMutex  sync.RWMutex
 	// flushDone is closed when the current in-flight flush completes.
 	// A new channel is created for each flush. Enforces single flush at a time.
-	flushDone      chan struct{}
-	flushMu        sync.Mutex
-	shutdownDoneCh chan struct{}
-	batchTicker    *time.Ticker
+	flushDone           chan struct{}
+	flushMu             sync.Mutex
+	shutdownDoneCh      chan struct{}
+	batchTicker         *time.Ticker
 	batchTickerDuration time.Duration
-	isDcpRebalancing    int32
 	eventCounter        int64
 	maxInFlightRequests int
 	batchSizeLimit      int
 	batchByteSizeLimit  int
 	currentBatchSize    int
 	currentByteSize     int
+	isDcpRebalancing    int32
 	batchPerEvent       bool
-	writeTimestamp      string
 }
 
 const (
@@ -293,8 +293,8 @@ func (b *Bulk) writeByEvent(batch []BatchItem) {
 		eventID int64
 		items   []BatchItem
 	}
-	seen := make(map[int64]int)
-	groups := make([]group, 0)
+	seen := make(map[int64]int, len(batch))
+	groups := make([]group, 0, len(batch))
 
 	for _, item := range batch {
 		if idx, ok := seen[item.EventID]; ok {
