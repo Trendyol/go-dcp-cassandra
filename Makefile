@@ -44,7 +44,7 @@ compose:
 .PHONY: test-integration
 test-integration:
 	docker compose -f test/integration/docker-compose.yml up -d --wait
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test -race -v -timeout 5m ./test/integration/...
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test -race -v -timeout 5m -tags integration ./test/integration/...
 	docker compose -f test/integration/docker-compose.yml down
 
 .PHONY: tidy
