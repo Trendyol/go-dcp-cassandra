@@ -279,8 +279,16 @@ func TestBulkBatchPerEvent(t *testing.T) {
 	})
 
 	bulk.AddActions(ctx(), time.Now(), []cassandra.Model{
-		&cassandra.Raw{Table: "orders", Document: map[string]any{"order_id": "o1", "partition_id": "p1", "product": "Widget", "status": "new"}, Operation: cassandra.Insert},
-		&cassandra.Raw{Table: "orders", Document: map[string]any{"order_id": "o1", "partition_id": "p2", "product": "Gadget", "status": "new"}, Operation: cassandra.Insert},
+		&cassandra.Raw{
+			Table:     "orders",
+			Document:  map[string]any{"order_id": "o1", "partition_id": "p1", "product": "Widget", "status": "new"},
+			Operation: cassandra.Insert,
+		},
+		&cassandra.Raw{
+			Table:     "orders",
+			Document:  map[string]any{"order_id": "o1", "partition_id": "p2", "product": "Gadget", "status": "new"},
+			Operation: cassandra.Insert,
+		},
 	})
 	waitFlush()
 
@@ -351,7 +359,7 @@ func TestMapperConcurrentAccess(t *testing.T) {
 			event := couchbase.NewMutateEvent(
 				[]byte(fmt.Sprintf("key_%d", idx)),
 				[]byte(fmt.Sprintf(`{"name":"n%d","email":"e%d@t.com"}`, idx, idx)),
-				col, time.Now(), uint64(idx), uint16(idx%1024),
+				col, time.Now(), uint64(idx), uint16(idx%1024), //nolint:gosec // test-only, idx is bounded [0,200)
 			)
 			result := connectorpkg.DefaultMapper(event)
 			assert.Len(t, result, 1)

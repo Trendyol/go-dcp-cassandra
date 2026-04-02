@@ -628,8 +628,8 @@ type mockSession struct{}
 
 func (m *mockSession) Query(string, ...any) Query         { return &mockQuery{} }
 func (m *mockSession) PreparedQuery(string, ...any) Query { return &mockQuery{} }
-func (m *mockSession) NewBatch(BatchType) Batch                   { return &mockBatch{} }
-func (m *mockSession) Close()                                     {}
+func (m *mockSession) NewBatch(BatchType) Batch           { return &mockBatch{} }
+func (m *mockSession) Close()                             {}
 
 type mockQuery struct{}
 
@@ -638,16 +638,16 @@ func (m *mockQuery) Exec() error { return nil }
 type mockBatch struct{ size int }
 
 func (m *mockBatch) Query(string, ...any) { m.size++ }
-func (m *mockBatch) Size() int                    { return m.size }
-func (m *mockBatch) ExecuteBatch() error          { return nil }
-func (m *mockBatch) WithTimestamp(int64)          {}
+func (m *mockBatch) Size() int           { return m.size }
+func (m *mockBatch) ExecuteBatch() error { return nil }
+func (m *mockBatch) WithTimestamp(int64) {}
 
 type mockSessionErr struct{}
 
 func (m *mockSessionErr) Query(string, ...any) Query         { return &mockQueryErr{} }
 func (m *mockSessionErr) PreparedQuery(string, ...any) Query { return &mockQueryErr{} }
-func (m *mockSessionErr) NewBatch(BatchType) Batch                   { return &mockBatchErr{} }
-func (m *mockSessionErr) Close()                                     {}
+func (m *mockSessionErr) NewBatch(BatchType) Batch           { return &mockBatchErr{} }
+func (m *mockSessionErr) Close()                             {}
 
 type mockQueryErr struct{}
 
@@ -656,16 +656,16 @@ func (m *mockQueryErr) Exec() error { return fmt.Errorf("mock error") }
 type mockBatchErr struct{ size int }
 
 func (m *mockBatchErr) Query(string, ...any) { m.size++ }
-func (m *mockBatchErr) Size() int                    { return m.size }
-func (m *mockBatchErr) ExecuteBatch() error          { return fmt.Errorf("mock batch error") }
-func (m *mockBatchErr) WithTimestamp(int64)          {}
+func (m *mockBatchErr) Size() int            { return m.size }
+func (m *mockBatchErr) ExecuteBatch() error  { return fmt.Errorf("mock batch error") }
+func (m *mockBatchErr) WithTimestamp(int64)  {}
 
 // mockSessionBlocking blocks on PreparedQuery to allow timing assertions.
 type mockSessionBlocking struct{ onQuery func() }
 
 func (m *mockSessionBlocking) Query(string, ...any) Query { return &mockQuery{} }
-func (m *mockSessionBlocking) NewBatch(BatchType) Batch           { return &mockBatch{} }
-func (m *mockSessionBlocking) Close()                             {}
+func (m *mockSessionBlocking) NewBatch(BatchType) Batch   { return &mockBatch{} }
+func (m *mockSessionBlocking) Close()                     {}
 func (m *mockSessionBlocking) PreparedQuery(string, ...any) Query {
 	if m.onQuery != nil {
 		m.onQuery()
@@ -689,7 +689,7 @@ type mockSessionCounting struct {
 }
 
 func (m *mockSessionCounting) Query(string, ...any) Query { return &mockQuery{} }
-func (m *mockSessionCounting) Close()                             {}
+func (m *mockSessionCounting) Close()                     {}
 func (m *mockSessionCounting) PreparedQuery(string, ...any) Query {
 	atomic.AddInt64(m.count, 1)
 	return &mockQuery{}
@@ -705,8 +705,8 @@ type mockBatchCounting struct {
 }
 
 func (m *mockBatchCounting) Query(string, ...any) { m.size++ }
-func (m *mockBatchCounting) Size() int                    { return m.size }
-func (m *mockBatchCounting) WithTimestamp(int64)          {}
+func (m *mockBatchCounting) Size() int            { return m.size }
+func (m *mockBatchCounting) WithTimestamp(int64)  {}
 func (m *mockBatchCounting) ExecuteBatch() error {
 	atomic.AddInt64(m.count, 1)
 	return nil

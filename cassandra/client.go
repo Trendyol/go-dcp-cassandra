@@ -106,7 +106,7 @@ func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 
 	if cfg.SSL.Enable {
 		tlsConfig := &tls.Config{
-			InsecureSkipVerify: cfg.SSL.InsecureSkipVerify,
+			InsecureSkipVerify: cfg.SSL.InsecureSkipVerify, //nolint:gosec // user-configurable option
 		}
 
 		if cfg.SSL.CertPath != "" || cfg.SSL.KeyPath != "" || cfg.SSL.CaPath != "" {
