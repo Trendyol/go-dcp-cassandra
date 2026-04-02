@@ -638,9 +638,9 @@ func (m *mockQuery) Exec() error { return nil }
 type mockBatch struct{ size int }
 
 func (m *mockBatch) Query(string, ...any) { m.size++ }
-func (m *mockBatch) Size() int           { return m.size }
-func (m *mockBatch) ExecuteBatch() error { return nil }
-func (m *mockBatch) WithTimestamp(int64) {}
+func (m *mockBatch) Size() int            { return m.size }
+func (m *mockBatch) ExecuteBatch() error  { return nil }
+func (m *mockBatch) WithTimestamp(int64)  {}
 
 type mockSessionErr struct{}
 
