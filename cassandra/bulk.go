@@ -1,6 +1,7 @@
 package cassandra
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -8,6 +9,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Trendyol/go-dcp/models"
 
@@ -242,15 +247,23 @@ func (b *Bulk) flushLocked() {
 func (b *Bulk) runFlush(batch []BatchItem, thisDone chan struct{}) {
 	defer close(thisDone)
 
+	ctx, span := tracer.Start(context.Background(), "cassandra.flush",
+		trace.WithAttributes(
+			attribute.String("db.system", "cassandra"),
+			attribute.String("db.name", b.keyspace),
+			attribute.Int("batch.size", len(batch)),
+			attribute.Bool("batch.per_event", b.batchPerEvent),
+		))
+	defer span.End()
+
 	startedTime := time.Now()
 
 	if b.batchPerEvent {
-		b.writeByEvent(batch)
+		b.writeByEvent(ctx, batch)
 	} else {
-		b.writeConcurrently(batch)
+		b.writeConcurrently(ctx, batch)
 	}
 
-	// Ack all items after all writes complete.
 	for _, item := range batch {
 		if item.Ack != nil {
 			item.Ack()
@@ -259,13 +272,15 @@ func (b *Bulk) runFlush(batch []BatchItem, thisDone chan struct{}) {
 
 	b.dcpCheckpointCommit()
 
+	latency := time.Since(startedTime).Milliseconds()
+	span.SetAttributes(attribute.Int64("flush.latency_ms", latency))
 	atomic.StoreInt64(&b.metric.BulkRequestSize, int64(len(batch)))
-	atomic.StoreInt64(&b.metric.BulkRequestProcessLatencyMs, time.Since(startedTime).Milliseconds())
+	atomic.StoreInt64(&b.metric.BulkRequestProcessLatencyMs, latency)
 }
 
 // writeConcurrently writes all items independently with a semaphore bounding
 // the number of concurrent Cassandra requests.
-func (b *Bulk) writeConcurrently(batch []BatchItem) {
+func (b *Bulk) writeConcurrently(ctx context.Context, batch []BatchItem) {
 	semaphore := make(chan struct{}, b.maxInFlightRequests)
 	var wg sync.WaitGroup
 
@@ -278,7 +293,7 @@ func (b *Bulk) writeConcurrently(batch []BatchItem) {
 		go func(it BatchItem) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
-			b.requestSync(it)
+			b.requestSync(ctx, it)
 		}(item)
 	}
 
@@ -287,8 +302,7 @@ func (b *Bulk) writeConcurrently(batch []BatchItem) {
 
 // writeByEvent groups items by EventID and writes each group as a single
 // CQL UNLOGGED BATCH, bounded by the semaphore.
-func (b *Bulk) writeByEvent(batch []BatchItem) {
-	// Preserve event insertion order.
+func (b *Bulk) writeByEvent(ctx context.Context, batch []BatchItem) {
 	type group struct {
 		eventID int64
 		items   []BatchItem
@@ -318,9 +332,9 @@ func (b *Bulk) writeByEvent(batch []BatchItem) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
 			if len(items) == 1 {
-				b.requestSync(items[0])
+				b.requestSync(ctx, items[0])
 			} else {
-				b.writeUnloggedBatch(items)
+				b.writeUnloggedBatch(ctx, items)
 			}
 		}(g.items)
 	}
@@ -330,7 +344,13 @@ func (b *Bulk) writeByEvent(batch []BatchItem) {
 
 // writeUnloggedBatch writes multiple items from the same DCP event as a
 // single CQL UNLOGGED BATCH.
-func (b *Bulk) writeUnloggedBatch(items []BatchItem) {
+func (b *Bulk) writeUnloggedBatch(ctx context.Context, items []BatchItem) {
+	_, span := tracer.Start(ctx, "cassandra.batch",
+		trace.WithAttributes(
+			attribute.Int("batch.items", len(items)),
+		))
+	defer span.End()
+
 	batch := b.session.NewBatch(UnloggedBatch)
 
 	for _, item := range items {
@@ -353,11 +373,13 @@ func (b *Bulk) writeUnloggedBatch(items []BatchItem) {
 	}
 
 	if err := batch.ExecuteBatch(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		panic(fmt.Sprintf("Cassandra unlogged batch write failed: %v", err))
 	}
 }
 
-func (b *Bulk) requestSync(item BatchItem) {
+func (b *Bulk) requestSync(ctx context.Context, item BatchItem) {
 	if item.Model == nil {
 		return
 	}
@@ -366,6 +388,13 @@ func (b *Bulk) requestSync(item BatchItem) {
 	if !ok {
 		return
 	}
+
+	_, span := tracer.Start(ctx, "cassandra.write",
+		trace.WithAttributes(
+			attribute.String("db.cassandra.table", rawModel.Table),
+			attribute.String("db.operation", string(rawModel.Operation)),
+		))
+	defer span.End()
 
 	var err error
 	switch rawModel.Operation {
@@ -377,6 +406,8 @@ func (b *Bulk) requestSync(item BatchItem) {
 		err = b.delete(rawModel)
 	}
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		panic(fmt.Sprintf("Cassandra %s failed on table %s: %v", rawModel.Operation, rawModel.Table, err))
 	}
 }

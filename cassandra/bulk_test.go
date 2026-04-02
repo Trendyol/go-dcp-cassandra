@@ -1,6 +1,7 @@
 package cassandra
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -119,7 +120,7 @@ func TestBulk_WriteError_Panics(t *testing.T) {
 		assert.NotNil(t, recover(), "Expected panic on Cassandra write error")
 	}()
 
-	b.requestSync(BatchItem{Model: &Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}})
+	b.requestSync(context.Background(), BatchItem{Model: &Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}})
 }
 
 // --- Flush triggered by size ---

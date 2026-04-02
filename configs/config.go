@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"strings"
 	"time"
 
@@ -140,6 +141,17 @@ func (c *Cassandra) setRetryDefaults() {
 	}
 }
 
+func (c *Cassandra) validate() {
+	const cassandraDefaultBatchThresholdKB = 50
+	if c.BatchPerEvent && c.BatchByteSizeLimit > cassandraDefaultBatchThresholdKB*1024 {
+		slog.Warn("with batchPerEvent enabled, large events may exceed Cassandra's batch_size_fail_threshold_in_kb",
+			"batchByteSizeLimit", c.BatchByteSizeLimit,
+			"cassandraDefaultThresholdKB", cassandraDefaultBatchThresholdKB,
+		)
+	}
+}
+
 func (c *Connector) ApplyDefaults() {
 	c.Cassandra.setDefaults()
+	c.Cassandra.validate()
 }
