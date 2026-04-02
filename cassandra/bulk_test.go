@@ -131,7 +131,7 @@ func TestFlush_TriggeredBySize(t *testing.T) {
 	b.maxInFlightRequests = 10
 
 	ctx := newListenerContext(func() {})
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		b.AddActions(ctx, time.Now(), []Model{
 			&Raw{Table: "t", Document: map[string]any{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
 		})
@@ -299,7 +299,7 @@ func TestFlush_CommitAfterAllWrites(t *testing.T) {
 	}
 
 	ctx := newListenerContext(func() {})
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		b.AddActions(ctx, time.Now(), []Model{
 			&Raw{Table: "t", Document: map[string]any{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
 		})
@@ -487,7 +487,7 @@ func TestBulk_PreparedStatementCaching(t *testing.T) {
 func TestBulk_ConcurrentInserts(t *testing.T) {
 	b := newBulk(&mockSession{})
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
