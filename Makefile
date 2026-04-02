@@ -1,4 +1,4 @@
-GO_TOOLCHAIN ?= go1.26
+GO_TOOLCHAIN ?= go1.26.0
 BIN_DIR ?= ./bin
 
 .PHONY: build
