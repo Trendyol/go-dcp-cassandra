@@ -1,16 +1,29 @@
 package cassandra
 
 import (
+	"context"
 	"crypto/tls"
 	"log/slog"
 
 	"github.com/gocql/gocql"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	otelTrace "go.opentelemetry.io/otel/trace"
 
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
 )
 
 //nolint:funlen
 func NewCassandraSession(cfg config.Cassandra) (Session, error) {
+	_, span := tracer.Start(context.Background(), "cassandra.connect",
+		otelTrace.WithAttributes(
+			attribute.String("db.system", "cassandra"),
+			attribute.String("db.cassandra.keyspace", cfg.Keyspace),
+			attribute.String("db.cassandra.consistency_level", cfg.Consistency),
+		),
+	)
+	defer span.End()
+
 	cluster := gocql.NewCluster(cfg.Hosts...)
 	cluster.Keyspace = cfg.Keyspace
 
@@ -115,6 +128,8 @@ func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 
 	session, err := cluster.CreateSession()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		slog.Error("failed to create cassandra session", "error", err)
 		return nil, err
 	}
