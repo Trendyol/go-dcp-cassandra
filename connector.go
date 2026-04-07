@@ -117,7 +117,7 @@ func NewConnectorBuilder(config any) ConnectorBuilder {
 func SimpleDefaultMapper(event couchbase.Event) []cassandra.Model {
 	raw := cassandra.Raw{
 		Table: "example_table",
-		Document: map[string]interface{}{
+		Document: map[string]any{
 			"key":  string(event.Key),
 			"data": string(event.Value),
 		},

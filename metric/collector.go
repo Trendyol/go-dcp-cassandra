@@ -27,28 +27,24 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		c.processLatency,
 		prometheus.GaugeValue,
 		float64(bulkMetric.ProcessLatencyMs),
-		[]string{}...,
 	)
 
 	ch <- prometheus.MustNewConstMetric(
 		c.bulkRequestProcessLatency,
 		prometheus.GaugeValue,
 		float64(bulkMetric.BulkRequestProcessLatencyMs),
-		[]string{}...,
 	)
 
 	ch <- prometheus.MustNewConstMetric(
 		c.bulkRequestSize,
 		prometheus.GaugeValue,
 		float64(bulkMetric.BulkRequestSize),
-		[]string{}...,
 	)
 
 	ch <- prometheus.MustNewConstMetric(
 		c.bulkRequestByteSize,
 		prometheus.GaugeValue,
 		float64(bulkMetric.BulkRequestByteSize),
-		[]string{}...,
 	)
 }
 

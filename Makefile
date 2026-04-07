@@ -1,4 +1,4 @@
-GO_TOOLCHAIN ?= go1.25.8
+GO_TOOLCHAIN ?= go1.26.0
 BIN_DIR ?= ./bin
 
 .PHONY: build
@@ -25,7 +25,13 @@ lint: tools
 
 .PHONY: test
 test:
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test -v ./...
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test -race ./...
+
+.PHONY: test-integration
+test-integration:
+	docker compose -f test/integration/docker-compose.yml up -d --wait
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test -race -v -timeout 5m -tags integration ./test/integration/...
+	docker compose -f test/integration/docker-compose.yml down
 
 .PHONY: bench
 bench:

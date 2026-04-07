@@ -21,15 +21,16 @@ jobs:
           fetch-depth: 1
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
-      - name: Start containers
-        run: make compose
+      - name: Start Cassandra
+        run: docker compose -f test/integration/docker-compose.yml up -d --wait
 
       - name: Integration Test
-        run: go test -v test/integration/integration_test.go
-        env:
-          INPUT_PUBLISH: false
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: go test -race -v -timeout 5m -tags integration ./test/integration/...
+
+      - name: Stop Cassandra
+        if: always()
+        run: docker compose -f test/integration/docker-compose.yml down

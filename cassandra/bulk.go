@@ -2,8 +2,8 @@ package cassandra
 
 import (
 	"fmt"
-	"log"
-	"sort"
+	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,7 +58,7 @@ const (
 	writeTimestampNow       = "now"
 )
 
-type Mapper func(event interface{}) []Model
+type Mapper func(event any) []Model
 
 type BulkBuilder struct{}
 
@@ -134,7 +134,7 @@ func (b *Bulk) Close() {
 
 func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, actions []Model) {
 	if atomic.LoadInt32(&b.isDcpRebalancing) != 0 {
-		log.Printf("could not add new message to batch while rebalancing")
+		slog.Warn("could not add new message to batch while rebalancing")
 		return
 	}
 
@@ -433,7 +433,7 @@ func estimateSize(model Model) int {
 	return size
 }
 
-func estimateValueSize(v interface{}) int {
+func estimateValueSize(v any) int {
 	switch val := v.(type) {
 	case string:
 		return len(val)
@@ -442,17 +442,6 @@ func estimateValueSize(v interface{}) int {
 	default:
 		return 8
 	}
-}
-
-func join(arr []string, sep string) string {
-	result := ""
-	for i, s := range arr {
-		if i > 0 {
-			result += sep
-		}
-		result += s
-	}
-	return result
 }
 
 func (b *Bulk) PrepareStartRebalancing() {
@@ -505,7 +494,7 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 			placeholders[i] = "?"
 		}
 		query = fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)",
-			b.keyspace, raw.Table, join(columns, ","), join(placeholders, ","))
+			b.keyspace, raw.Table, strings.Join(columns, ","), strings.Join(placeholders, ","))
 		if hasTS {
 			query += " USING TIMESTAMP ?"
 		}
@@ -522,10 +511,10 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 		}
 		if hasTS {
 			query = fmt.Sprintf("UPDATE %s.%s USING TIMESTAMP ? SET %s WHERE %s",
-				b.keyspace, raw.Table, join(setParts, ","), join(whereParts, " AND "))
+				b.keyspace, raw.Table, strings.Join(setParts, ","), strings.Join(whereParts, " AND "))
 		} else {
 			query = fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s",
-				b.keyspace, raw.Table, join(setParts, ","), join(whereParts, " AND "))
+				b.keyspace, raw.Table, strings.Join(setParts, ","), strings.Join(whereParts, " AND "))
 		}
 	case "DELETE":
 		filterColumns := sortedKeys(raw.Filter)
@@ -535,10 +524,10 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 		}
 		if hasTS {
 			query = fmt.Sprintf("DELETE FROM %s.%s USING TIMESTAMP ? WHERE %s",
-				b.keyspace, raw.Table, join(whereParts, " AND "))
+				b.keyspace, raw.Table, strings.Join(whereParts, " AND "))
 		} else {
 			query = fmt.Sprintf("DELETE FROM %s.%s WHERE %s",
-				b.keyspace, raw.Table, join(whereParts, " AND "))
+				b.keyspace, raw.Table, strings.Join(whereParts, " AND "))
 		}
 	}
 
@@ -546,7 +535,7 @@ func (b *Bulk) getCachedPreparedStatement(cacheKey string, raw *Raw, operation s
 	return query
 }
 
-func (b *Bulk) buildQueryAndValues(raw *Raw) (string, []interface{}) {
+func (b *Bulk) buildQueryAndValues(raw *Raw) (string, []any) {
 	hasTS := raw.Timestamp > 0
 	switch raw.Operation {
 	case Insert, Upsert:
@@ -560,11 +549,11 @@ func (b *Bulk) buildQueryAndValues(raw *Raw) (string, []interface{}) {
 	}
 }
 
-func (b *Bulk) buildInsertValues(raw *Raw, hasTS bool) (string, []interface{}) {
+func (b *Bulk) buildInsertValues(raw *Raw, hasTS bool) (string, []any) {
 	columns := sortedKeys(raw.Document)
 	cacheKey := fmt.Sprintf("INSERT:%s:%s:%v", raw.Table, strings.Join(columns, ","), hasTS)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
-	values := make([]interface{}, 0, len(columns)+1)
+	values := make([]any, 0, len(columns)+1)
 	for _, col := range columns {
 		values = append(values, raw.Document[col])
 	}
@@ -574,13 +563,13 @@ func (b *Bulk) buildInsertValues(raw *Raw, hasTS bool) (string, []interface{}) {
 	return query, values
 }
 
-func (b *Bulk) buildUpdateValues(raw *Raw, hasTS bool) (string, []interface{}) {
+func (b *Bulk) buildUpdateValues(raw *Raw, hasTS bool) (string, []any) {
 	docColumns := sortedKeys(raw.Document)
 	filterColumns := sortedKeys(raw.Filter)
 	cacheKey := fmt.Sprintf("UPDATE:%s:%s:%s:%v",
 		raw.Table, strings.Join(docColumns, ","), strings.Join(filterColumns, ","), hasTS)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "UPDATE")
-	values := make([]interface{}, 0, len(docColumns)+len(filterColumns)+1)
+	values := make([]any, 0, len(docColumns)+len(filterColumns)+1)
 
 	if hasTS {
 		values = append(values, raw.Timestamp)
@@ -594,11 +583,11 @@ func (b *Bulk) buildUpdateValues(raw *Raw, hasTS bool) (string, []interface{}) {
 	return query, values
 }
 
-func (b *Bulk) buildDeleteValues(raw *Raw, hasTS bool) (string, []interface{}) {
+func (b *Bulk) buildDeleteValues(raw *Raw, hasTS bool) (string, []any) {
 	filterColumns := sortedKeys(raw.Filter)
 	cacheKey := fmt.Sprintf("DELETE:%s:%s:%v", raw.Table, strings.Join(filterColumns, ","), hasTS)
 	query := b.getCachedPreparedStatement(cacheKey, raw, "DELETE")
-	values := make([]interface{}, 0, len(filterColumns)+1)
+	values := make([]any, 0, len(filterColumns)+1)
 
 	if hasTS {
 		values = append(values, raw.Timestamp)
@@ -609,11 +598,20 @@ func (b *Bulk) buildDeleteValues(raw *Raw, hasTS bool) (string, []interface{}) {
 	return query, values
 }
 
-func sortedKeys(m map[string]interface{}) []string {
+func sortedKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
+
+// TestInsert is exported for integration tests only.
+func (b *Bulk) TestInsert(raw *Raw) error { return b.insert(raw) }
+
+// TestUpdate is exported for integration tests only.
+func (b *Bulk) TestUpdate(raw *Raw) error { return b.update(raw) }
+
+// TestDelete is exported for integration tests only.
+func (b *Bulk) TestDelete(raw *Raw) error { return b.delete(raw) }

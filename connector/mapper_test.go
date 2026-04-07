@@ -151,48 +151,29 @@ func TestConcurrentMapperAccess(t *testing.T) {
 	wg.Wait()
 }
 
-// Regression: SetCollectionTableMappings must clear the cache so
-// changed mappings take effect.
 func TestSetCollectionTableMappings_ClearsCache(t *testing.T) {
-	mappings1 := []config.CollectionTableMapping{
-		{
-			Collection:    "items",
-			TableName:     "items_v1",
-			FieldMappings: map[string]string{"id": "_key"},
-		},
+	m1 := []config.CollectionTableMapping{
+		{Collection: "items", TableName: "items_v1", FieldMappings: map[string]string{"id": "_key"}},
 	}
-	SetCollectionTableMappings(&mappings1)
+	SetCollectionTableMappings(&m1)
 
 	event := couchbase.NewMutateEvent(
-		[]byte("key"), []byte(`{}`), "items",
-		time.Now(), 1, 0,
+		[]byte("key"), []byte(`{}`), "items", time.Now(), 1, 0,
 	)
-	result1 := DefaultMapper(event)
-	assert.Equal(t, "items_v1", result1[0].(*cassandra.Raw).Table)
+	assert.Equal(t, "items_v1", DefaultMapper(event)[0].(*cassandra.Raw).Table)
 
-	mappings2 := []config.CollectionTableMapping{
-		{
-			Collection:    "items",
-			TableName:     "items_v2",
-			FieldMappings: map[string]string{"id": "_key"},
-		},
+	m2 := []config.CollectionTableMapping{
+		{Collection: "items", TableName: "items_v2", FieldMappings: map[string]string{"id": "_key"}},
 	}
-	SetCollectionTableMappings(&mappings2)
+	SetCollectionTableMappings(&m2)
 
-	result2 := DefaultMapper(event)
-	assert.Equal(t, "items_v2", result2[0].(*cassandra.Raw).Table,
+	assert.Equal(t, "items_v2", DefaultMapper(event)[0].(*cassandra.Raw).Table,
 		"cache must be cleared when mappings are updated")
 }
 
-// Regression: connector mapper falls back to default/empty collection
-// mapping when no exact match is found.
 func TestDefaultMapper_FallbackToDefaultCollection(t *testing.T) {
 	mappings := []config.CollectionTableMapping{
-		{
-			Collection:    "_default",
-			TableName:     "fallback_table",
-			FieldMappings: map[string]string{"id": "_key"},
-		},
+		{Collection: "_default", TableName: "fallback_table", FieldMappings: map[string]string{"id": "_key"}},
 	}
 	SetCollectionTableMappings(&mappings)
 
@@ -205,7 +186,6 @@ func TestDefaultMapper_FallbackToDefaultCollection(t *testing.T) {
 	assert.Equal(t, "fallback_table", result[0].(*cassandra.Raw).Table)
 }
 
-// Regression: concurrent mapping updates + reads must not race.
 func TestConcurrentMapperAccess_WithMappingUpdate(t *testing.T) {
 	mappings := []config.CollectionTableMapping{
 		{Collection: "col", TableName: "table", FieldMappings: map[string]string{"id": "_key"}},
@@ -235,6 +215,103 @@ func TestConcurrentMapperAccess_WithMappingUpdate(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// --- getNestedField tests (strings.Cut refactoring) ---
+
+func TestGetNestedField_SimpleField(t *testing.T) {
+	doc := map[string]any{"name": "test"}
+	val, ok := getNestedField(doc, "name")
+	assert.True(t, ok)
+	assert.Equal(t, "test", val)
+}
+
+func TestGetNestedField_OneLevelNested(t *testing.T) {
+	doc := map[string]any{"meta": map[string]any{"version": "2.0"}}
+	val, ok := getNestedField(doc, "meta.version")
+	assert.True(t, ok)
+	assert.Equal(t, "2.0", val)
+}
+
+func TestGetNestedField_DeepNested(t *testing.T) {
+	doc := map[string]any{
+		"a": map[string]any{
+			"b": map[string]any{
+				"c": map[string]any{"d": "deep_value"},
+			},
+		},
+	}
+	val, ok := getNestedField(doc, "a.b.c.d")
+	assert.True(t, ok)
+	assert.Equal(t, "deep_value", val)
+}
+
+func TestGetNestedField_MissingIntermediateKey(t *testing.T) {
+	doc := map[string]any{"a": map[string]any{"x": "y"}}
+	val, ok := getNestedField(doc, "a.b.c")
+	assert.False(t, ok)
+	assert.Nil(t, val)
+}
+
+func TestGetNestedField_NonMapIntermediate(t *testing.T) {
+	doc := map[string]any{"a": "not_a_map"}
+	val, ok := getNestedField(doc, "a.b")
+	assert.False(t, ok)
+	assert.Nil(t, val)
+}
+
+func TestGetNestedField_MissingTopLevel(t *testing.T) {
+	doc := map[string]any{"x": "y"}
+	val, ok := getNestedField(doc, "missing")
+	assert.False(t, ok)
+	assert.Nil(t, val)
+}
+
+func TestGetNestedField_EmptyDocument(t *testing.T) {
+	doc := map[string]any{}
+	val, ok := getNestedField(doc, "any.field")
+	assert.False(t, ok)
+	assert.Nil(t, val)
+}
+
+func TestDefaultMapper_DeepNestedField(t *testing.T) {
+	mappings := []config.CollectionTableMapping{
+		{
+			Collection:    "docs",
+			TableName:     "docs_table",
+			FieldMappings: map[string]string{"id": "_key", "city": "address.home.city"},
+		},
+	}
+	SetCollectionTableMappings(&mappings)
+
+	event := couchbase.NewMutateEvent(
+		[]byte("doc_1"), []byte(`{"address":{"home":{"city":"Istanbul"}}}`),
+		"docs", time.Now(), 1, 0,
+	)
+
+	result := DefaultMapper(event)
+	raw := result[0].(*cassandra.Raw)
+	assert.Equal(t, "Istanbul", raw.Document["city"])
+}
+
+func TestDefaultMapper_MissingNestedField(t *testing.T) {
+	mappings := []config.CollectionTableMapping{
+		{
+			Collection:    "docs",
+			TableName:     "docs_table",
+			FieldMappings: map[string]string{"id": "_key", "missing": "a.b.c"},
+		},
+	}
+	SetCollectionTableMappings(&mappings)
+
+	event := couchbase.NewMutateEvent(
+		[]byte("doc_1"), []byte(`{"a":{"x":"y"}}`),
+		"docs", time.Now(), 1, 0,
+	)
+
+	result := DefaultMapper(event)
+	raw := result[0].(*cassandra.Raw)
+	assert.Nil(t, raw.Document["missing"])
 }
 
 func TestDefaultMapper_UnknownEvent(t *testing.T) {

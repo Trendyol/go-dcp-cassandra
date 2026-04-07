@@ -15,17 +15,17 @@ type Model interface {
 
 type Raw struct {
 	Table     string
-	Document  map[string]interface{}
+	Document  map[string]any
 	Operation OperationType
-	Filter    map[string]interface{}
-	RowKey    map[string]interface{}
+	Filter    map[string]any
+	RowKey    map[string]any
 	ID        string
 	Timestamp int64
 }
 
 type ExecArgs struct {
-	Document  map[string]interface{}
-	Filter    map[string]interface{}
+	Document  map[string]any
+	Filter    map[string]any
 	Table     string
 	Operation OperationType
 }

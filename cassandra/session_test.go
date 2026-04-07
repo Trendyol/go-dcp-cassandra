@@ -16,13 +16,13 @@ type enhancedMockSession struct {
 	newBatchCallCount      int
 }
 
-func (m *enhancedMockSession) Query(stmt string, values ...interface{}) Query {
+func (m *enhancedMockSession) Query(stmt string, values ...any) Query {
 	m.queryCallCount++
 	m.queries = append(m.queries, stmt)
 	return &enhancedMockQuery{}
 }
 
-func (m *enhancedMockSession) PreparedQuery(stmt string, values ...interface{}) Query {
+func (m *enhancedMockSession) PreparedQuery(stmt string, values ...any) Query {
 	m.preparedQueryCallCount++
 	m.preparedQueries = append(m.preparedQueries, stmt)
 	return &enhancedMockQuery{}
@@ -50,7 +50,7 @@ type enhancedMockBatch struct {
 	size      int
 }
 
-func (m *enhancedMockBatch) Query(stmt string, values ...interface{}) {
+func (m *enhancedMockBatch) Query(stmt string, values ...any) {
 	m.queries = append(m.queries, stmt)
 	m.size++
 }
@@ -72,8 +72,7 @@ func TestSessionInterfaceImplementation(t *testing.T) {
 // Regression: the old GocqlSessionAdapter had a custom preparedStmts map
 // with a sync.RWMutex that raced under concurrent access.
 // The fix removed the custom cache entirely, delegating to gocql's thread-safe
-// internal cache. This test verifies concurrent PreparedQuery calls are safe
-// using a thread-safe mock.
+// internal cache. This test verifies concurrent PreparedQuery calls are safe.
 func TestConcurrentPreparedQuery(t *testing.T) {
 	var callCount int64
 	session := &threadSafeMockSession{callCount: &callCount}
@@ -98,11 +97,11 @@ type threadSafeMockSession struct {
 	callCount *int64
 }
 
-func (m *threadSafeMockSession) Query(string, ...interface{}) Query { return &mockQuery{} }
-func (m *threadSafeMockSession) NewBatch(BatchType) Batch           { return &mockBatch{} }
-func (m *threadSafeMockSession) Close()                             {}
+func (m *threadSafeMockSession) Query(string, ...any) Query { return &mockQuery{} }
+func (m *threadSafeMockSession) NewBatch(BatchType) Batch   { return &mockBatch{} }
+func (m *threadSafeMockSession) Close()                     {}
 
-func (m *threadSafeMockSession) PreparedQuery(string, ...interface{}) Query {
+func (m *threadSafeMockSession) PreparedQuery(string, ...any) Query {
 	atomic.AddInt64(m.callCount, 1)
 	return &mockQuery{}
 }

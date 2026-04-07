@@ -107,6 +107,9 @@ func (c *Cassandra) setBatchDefaults() {
 }
 
 func (c *Cassandra) setConnectionDefaults() {
+	if c.Timeout <= 0 {
+		c.Timeout = 10 * time.Second
+	}
 	if c.NumConns <= 0 {
 		c.NumConns = 2
 	}
@@ -138,4 +141,9 @@ func (c *Cassandra) setRetryDefaults() {
 
 func (c *Connector) ApplyDefaults() {
 	c.Cassandra.setDefaults()
+}
+
+// SetTestDefaults applies defaults for integration tests.
+func (c *Cassandra) SetTestDefaults() {
+	c.setDefaults()
 }

@@ -1,6 +1,6 @@
 module simple-example
 
-go 1.25
+go 1.26
 
 require github.com/Trendyol/go-dcp-cassandra v0.0.0
 

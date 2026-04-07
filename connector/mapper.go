@@ -76,38 +76,26 @@ func findCollectionTableMapping(collectionName string) config.CollectionTableMap
 	panic(fmt.Sprintf("no mapping found for collection: %s", collectionName))
 }
 
-func getNestedField(document map[string]interface{}, fieldPath string) (interface{}, bool) {
-	if strings.Contains(fieldPath, ".") {
-		parts := strings.Split(fieldPath, ".")
-		current := document
+func getNestedField(document map[string]any, fieldPath string) (any, bool) {
+	current := document
+	remaining := fieldPath
 
-		for i, part := range parts {
-			if i == len(parts)-1 {
-				if value, exists := current[part]; exists {
-					return value, true
-				}
-				return nil, false
-			} else {
-				if value, exists := current[part]; exists {
-					if nested, ok := value.(map[string]interface{}); ok {
-						current = nested
-					} else {
-						return nil, false
-					}
-				} else {
-					return nil, false
-				}
-			}
+	for {
+		key, rest, hasMore := strings.Cut(remaining, ".")
+		if !hasMore {
+			value, exists := current[key]
+			return value, exists
 		}
+		nested, ok := current[key].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = nested
+		remaining = rest
 	}
-
-	if value, exists := document[fieldPath]; exists {
-		return value, true
-	}
-	return nil, false
 }
 
-func convertFieldValue(fieldPath string, value interface{}) interface{} {
+func convertFieldValue(fieldPath string, value any) any {
 	if fieldPath == "date" {
 		switch v := value.(type) {
 		case float64:
@@ -128,12 +116,12 @@ func convertFieldValue(fieldPath string, value interface{}) interface{} {
 }
 
 func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Event) cassandra.Raw {
-	var sourceDocument map[string]interface{}
+	var sourceDocument map[string]any
 	if err := json.Unmarshal(event.Value, &sourceDocument); err != nil {
-		sourceDocument = make(map[string]interface{})
+		sourceDocument = make(map[string]any)
 	}
 
-	targetDocument := make(map[string]interface{})
+	targetDocument := make(map[string]any)
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
 		switch sourceField {
@@ -158,7 +146,7 @@ func buildUpsertModel(mapping config.CollectionTableMapping, event couchbase.Eve
 }
 
 func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Event) cassandra.Raw {
-	var sourceDocument map[string]interface{}
+	var sourceDocument map[string]any
 	if event.Value != nil {
 		err := json.Unmarshal(event.Value, &sourceDocument)
 		if err != nil {
@@ -166,10 +154,10 @@ func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Eve
 		}
 	}
 	if sourceDocument == nil {
-		sourceDocument = make(map[string]interface{})
+		sourceDocument = make(map[string]any)
 	}
 
-	filter := make(map[string]interface{})
+	filter := make(map[string]any)
 
 	for cassandraColumn, sourceField := range mapping.FieldMappings {
 		switch sourceField {

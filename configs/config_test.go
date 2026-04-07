@@ -104,6 +104,7 @@ func TestCassandra_SetDefaults_ConnectionPooling(t *testing.T) {
 	cassandra.setDefaults()
 
 	// Test connection pooling defaults
+	assert.Equal(t, 10*time.Second, cassandra.Timeout)
 	assert.Equal(t, 2, cassandra.NumConns)
 	assert.Equal(t, 5*time.Second, cassandra.ConnectTimeout)
 	assert.Equal(t, 30*time.Second, cassandra.KeepAlive)
@@ -119,6 +120,12 @@ func TestCassandra_SetDefaults_RetryPolicy(t *testing.T) {
 	assert.Equal(t, 3, cassandra.RetryPolicy.NumRetries)
 	assert.Equal(t, 100*time.Millisecond, cassandra.RetryPolicy.MinRetryDelay)
 	assert.Equal(t, 1*time.Second, cassandra.RetryPolicy.MaxRetryDelay)
+}
+
+func TestCassandra_SetDefaults_TimeoutPreserved(t *testing.T) {
+	c := Cassandra{Timeout: 30 * time.Second}
+	c.setDefaults()
+	assert.Equal(t, 30*time.Second, c.Timeout, "custom timeout should not be overwritten")
 }
 
 func TestCassandra_SetDefaults_CustomValues(t *testing.T) {
