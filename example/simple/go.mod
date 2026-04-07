@@ -1,6 +1,6 @@
 module simple-example
 
-go 1.24.13
+go 1.26
 
 require go-dcp-cassandra v0.0.0
 

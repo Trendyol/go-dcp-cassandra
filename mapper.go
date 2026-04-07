@@ -66,37 +66,21 @@ func findCollectionTableMapping(collectionName string) config.CollectionTableMap
 }
 
 func getNestedField(document map[string]any, fieldPath string) (any, bool) {
-	// Handle nested fields like "meta.id"
-	if strings.Contains(fieldPath, ".") {
-		parts := strings.Split(fieldPath, ".")
-		current := document
-
-		for i, part := range parts {
-			if i == len(parts)-1 {
-				// Last part, return the value
-				if value, exists := current[part]; exists {
-					return value, true
-				}
-				return nil, false
-			} else {
-				// Intermediate part, navigate deeper
-				if value, exists := current[part]; exists {
-					if nested, ok := value.(map[string]any); ok {
-						current = nested
-					} else {
-						return nil, false
-					}
-				} else {
-					return nil, false
-				}
-			}
+	current := document
+	remaining := fieldPath
+	for {
+		key, rest, hasMore := strings.Cut(remaining, ".")
+		if !hasMore {
+			value, exists := current[key]
+			return value, exists
 		}
+		nested, ok := current[key].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = nested
+		remaining = rest
 	}
-
-	if value, exists := document[fieldPath]; exists {
-		return value, true
-	}
-	return nil, false
 }
 
 func convertFieldValue(fieldPath string, value any) any {
