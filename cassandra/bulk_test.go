@@ -20,6 +20,8 @@ func newListenerContext(ackFn func()) *models.ListenerContext {
 func newBulk(session Session) *Bulk {
 	done := make(chan struct{})
 	close(done)
+	shutdownDone := make(chan struct{})
+	close(shutdownDone)
 	return &Bulk{
 		session:             session,
 		keyspace:            "ks",
@@ -33,6 +35,7 @@ func newBulk(session Session) *Bulk {
 		batchTicker:         time.NewTicker(10 * time.Second),
 		maxInFlightRequests: 10,
 		flushDone:           done,
+		shutdownDoneCh:      shutdownDone,
 	}
 }
 
@@ -166,6 +169,7 @@ func TestFlush_TriggeredByTicker(t *testing.T) {
 		maxInFlightRequests: 10,
 		flushDone:           done,
 		shutdownCh:          make(chan struct{}),
+		shutdownDoneCh:      make(chan struct{}),
 	}
 
 	ctx := newListenerContext(func() {})
@@ -177,11 +181,7 @@ func TestFlush_TriggeredByTicker(t *testing.T) {
 	go b.StartBulk()
 	time.Sleep(60 * time.Millisecond)
 	close(b.shutdownCh)
-
-	b.flushMu.Lock()
-	flushDone := b.flushDone
-	b.flushMu.Unlock()
-	<-flushDone
+	<-b.shutdownDoneCh
 
 	assert.Equal(t, int64(1), atomic.LoadInt64(&writeCount))
 }
@@ -278,6 +278,8 @@ func TestFlush_CommitAfterAllWrites(t *testing.T) {
 
 	done := make(chan struct{})
 	close(done)
+	shutdownDone := make(chan struct{})
+	close(shutdownDone)
 	b := &Bulk{
 		session:  &mockSessionCounting{count: &writeCount},
 		keyspace: "ks",
@@ -295,6 +297,7 @@ func TestFlush_CommitAfterAllWrites(t *testing.T) {
 		batchTicker:         time.NewTicker(10 * time.Second),
 		maxInFlightRequests: 10,
 		flushDone:           done,
+		shutdownDoneCh:      shutdownDone,
 	}
 
 	ctx := newListenerContext(func() {})
@@ -482,11 +485,30 @@ func TestJoin(t *testing.T) {
 func TestBulk_PreparedStatementCaching(t *testing.T) {
 	b := newBulk(&mockSession{})
 	raw := &Raw{Table: "test_table", Document: map[string]interface{}{"id": "1", "name": "test"}, Operation: Insert}
-	cacheKey := fmt.Sprintf("INSERT:%s:%d:%v", raw.Table, len(raw.Document), false)
+	columns := sortedKeys(raw.Document)
+	cacheKey := fmt.Sprintf("INSERT:%s:%s:%v", raw.Table, join(columns, ","), false)
 	q1 := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
 	q2 := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
 	assert.NotEmpty(t, q1)
 	assert.Equal(t, q1, q2)
+}
+
+// TestBulk_CacheKeyCollision verifies that documents with the same number of
+// columns but different column names produce different prepared statements.
+// Bug: The old cache key used len(Document) as the discriminator, so
+// {a:1, b:2} and {x:1, y:2} would share the same cached query.
+// This test fails on master and passes with the fix.
+func TestBulk_CacheKeyCollision(t *testing.T) {
+	b := newBulk(&mockSession{})
+	raw1 := &Raw{Table: "t", Document: map[string]interface{}{"alpha": "1", "beta": "2"}, Operation: Insert}
+	raw2 := &Raw{Table: "t", Document: map[string]interface{}{"gamma": "1", "delta": "2"}, Operation: Insert}
+
+	q1, _ := b.buildInsertValues(raw1, false)
+	q2, _ := b.buildInsertValues(raw2, false)
+
+	assert.NotEqual(t, q1, q2, "different column sets must produce different queries")
+	assert.Contains(t, q1, "alpha")
+	assert.Contains(t, q2, "gamma")
 }
 
 func TestBulk_ConcurrentInserts(t *testing.T) {
@@ -504,6 +526,116 @@ func TestBulk_ConcurrentInserts(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// --- Shutdown race: Close must wait for StartBulk ---
+// Bug: Close() called session.Close() immediately after signalling shutdown,
+// but StartBulk's final flush might still be using the session.
+// This test fails with -race on master and passes with the fix.
+
+func TestBulk_Close_WaitsForStartBulk(t *testing.T) {
+	writeCount := int64(0)
+	done := make(chan struct{})
+	close(done)
+	b := &Bulk{
+		session:             &mockSessionCounting{count: &writeCount},
+		keyspace:            "ks",
+		dcpCheckpointCommit: func() {},
+		metric:              &Metric{},
+		preparedStmts:       make(map[string]string),
+		batchBuffer:         make([]BatchItem, 0, 100),
+		batchSizeLimit:      1000,
+		batchByteSizeLimit:  10 * 1024 * 1024,
+		batchTickerDuration: 50 * time.Millisecond,
+		batchTicker:         time.NewTicker(50 * time.Millisecond),
+		maxInFlightRequests: 10,
+		flushDone:           done,
+		shutdownCh:          make(chan struct{}),
+		shutdownDoneCh:      make(chan struct{}),
+	}
+
+	ctx := newListenerContext(func() {})
+	b.AddActions(ctx, time.Now(), []Model{
+		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+	})
+
+	go b.StartBulk()
+
+	// Let the ticker fire at least once.
+	time.Sleep(80 * time.Millisecond)
+
+	b.Close()
+
+	// If Close returned, StartBulk has finished — session is safe to use until this point.
+	assert.GreaterOrEqual(t, atomic.LoadInt64(&writeCount), int64(1))
+}
+
+// --- Metric data race: concurrent metric reads/writes ---
+// Bug: runFlush wrote b.metric.BulkRequestSize directly while GetMetric
+// returned the shared pointer. Under -race, concurrent access is detected.
+// This test fails with -race on master and passes with atomic operations.
+
+func TestBulk_MetricRace(t *testing.T) {
+	writeCount := int64(0)
+	b := newBulk(&mockSessionCounting{count: &writeCount})
+	b.batchSizeLimit = 1
+	b.maxInFlightRequests = 10
+
+	var wg sync.WaitGroup
+
+	// Writer goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ctx := newListenerContext(func() {})
+		for i := 0; i < 10; i++ {
+			b.AddActions(ctx, time.Now(), []Model{
+				&Raw{Table: "t", Document: map[string]interface{}{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
+			})
+		}
+	}()
+
+	// Reader goroutine — must not race with writer
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			m := b.GetMetric()
+			_ = m.ProcessLatencyMs
+			_ = m.BulkRequestSize
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+}
+
+// --- Flush metrics update ---
+
+func TestFlush_UpdatesMetrics(t *testing.T) {
+	writeCount := int64(0)
+	b := newBulk(&mockSessionCounting{count: &writeCount})
+	b.batchSizeLimit = 2
+	b.maxInFlightRequests = 10
+
+	// Set sentinel values so we can verify they change.
+	atomic.StoreInt64(&b.metric.BulkRequestSize, -1)
+	atomic.StoreInt64(&b.metric.BulkRequestProcessLatencyMs, -1)
+
+	ctx := newListenerContext(func() {})
+	b.AddActions(ctx, time.Now(), []Model{
+		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]interface{}{"id": "2"}, Operation: Insert},
+	})
+
+	b.flushMu.Lock()
+	done := b.flushDone
+	b.flushMu.Unlock()
+	<-done
+
+	m := b.GetMetric()
+	assert.Equal(t, int64(2), m.BulkRequestSize)
+	assert.GreaterOrEqual(t, m.BulkRequestProcessLatencyMs, int64(0))
 }
 
 // --- Mock implementations ---

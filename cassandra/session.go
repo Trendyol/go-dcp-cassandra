@@ -1,8 +1,6 @@
 package cassandra
 
 import (
-	"sync"
-
 	"github.com/gocql/gocql"
 )
 
@@ -32,18 +30,17 @@ type Batch interface {
 	ExecuteBatch() error
 }
 
+// GocqlSessionAdapter wraps a gocql.Session to implement the Session interface.
+// Prepared statement caching is delegated entirely to gocql's internal cache
+// (controlled by MaxPreparedStmts), avoiding the data race that existed when
+// a client-side map + RWMutex was used: gocql.Query.Bind mutates the receiver,
+// so sharing a cached *gocql.Query across goroutines caused concurrent writes.
 type GocqlSessionAdapter struct {
 	*gocql.Session
-	preparedStmts map[string]*gocql.Query
-	mutex         sync.RWMutex
 }
 
 func NewGocqlSessionAdapter(session *gocql.Session) *GocqlSessionAdapter {
-	return &GocqlSessionAdapter{
-		Session:       session,
-		preparedStmts: make(map[string]*gocql.Query),
-		mutex:         sync.RWMutex{},
-	}
+	return &GocqlSessionAdapter{Session: session}
 }
 
 func (s *GocqlSessionAdapter) Query(stmt string, values ...interface{}) Query {
@@ -51,23 +48,7 @@ func (s *GocqlSessionAdapter) Query(stmt string, values ...interface{}) Query {
 }
 
 func (s *GocqlSessionAdapter) PreparedQuery(stmt string, values ...interface{}) Query {
-	s.mutex.RLock()
-	if preparedQuery, exists := s.preparedStmts[stmt]; exists {
-		s.mutex.RUnlock()
-		return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
-	}
-	s.mutex.RUnlock()
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if preparedQuery, exists := s.preparedStmts[stmt]; exists {
-		return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
-	}
-
-	preparedQuery := s.Session.Query(stmt)
-	s.preparedStmts[stmt] = preparedQuery
-	return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
+	return &GocqlQueryAdapter{q: s.Session.Query(stmt, values...)}
 }
 
 func (s *GocqlSessionAdapter) NewBatch(batchType BatchType) Batch {
