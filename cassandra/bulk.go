@@ -272,13 +272,11 @@ func (b *Bulk) writeConcurrently(batch []BatchItem) {
 		if item.Model == nil {
 			continue
 		}
-		wg.Add(1)
 		semaphore <- struct{}{}
-		go func(it BatchItem) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-semaphore }()
-			b.requestSync(it)
-		}(item)
+			b.requestSync(item)
+		})
 	}
 
 	wg.Wait()
@@ -311,17 +309,15 @@ func (b *Bulk) writeByEvent(batch []BatchItem) {
 		if len(g.items) == 0 {
 			continue
 		}
-		wg.Add(1)
 		semaphore <- struct{}{}
-		go func(items []BatchItem) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-semaphore }()
-			if len(items) == 1 {
-				b.requestSync(items[0])
+			if len(g.items) == 1 {
+				b.requestSync(g.items[0])
 			} else {
-				b.writeUnloggedBatch(items)
+				b.writeUnloggedBatch(g.items)
 			}
-		}(g.items)
+		})
 	}
 
 	wg.Wait()
