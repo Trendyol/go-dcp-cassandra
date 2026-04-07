@@ -107,6 +107,9 @@ func (c *Cassandra) setBatchDefaults() {
 }
 
 func (c *Cassandra) setConnectionDefaults() {
+	if c.Timeout <= 0 {
+		c.Timeout = 10 * time.Second
+	}
 	if c.NumConns <= 0 {
 		c.NumConns = 2
 	}

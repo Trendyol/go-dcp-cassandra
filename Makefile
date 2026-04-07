@@ -1,4 +1,4 @@
-GO_TOOLCHAIN ?= go1.24.13
+GO_TOOLCHAIN ?= go1.25.0
 BIN_DIR ?= ./bin
 
 .PHONY: build
@@ -25,7 +25,7 @@ lint: tools
 
 .PHONY: test
 test:
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test ./...
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go test -race ./...
 
 .PHONY: bench
 bench:

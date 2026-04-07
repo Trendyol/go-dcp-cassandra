@@ -13,8 +13,8 @@ const (
 )
 
 type Session interface {
-	Query(string, ...interface{}) Query
-	PreparedQuery(string, ...interface{}) Query
+	Query(string, ...any) Query
+	PreparedQuery(string, ...any) Query
 	NewBatch(BatchType) Batch
 	Close()
 }
@@ -24,7 +24,7 @@ type Query interface {
 }
 
 type Batch interface {
-	Query(string, ...interface{})
+	Query(string, ...any)
 	WithTimestamp(int64)
 	Size() int
 	ExecuteBatch() error
@@ -43,11 +43,11 @@ func NewGocqlSessionAdapter(session *gocql.Session) *GocqlSessionAdapter {
 	return &GocqlSessionAdapter{Session: session}
 }
 
-func (s *GocqlSessionAdapter) Query(stmt string, values ...interface{}) Query {
+func (s *GocqlSessionAdapter) Query(stmt string, values ...any) Query {
 	return &GocqlQueryAdapter{q: s.Session.Query(stmt, values...)}
 }
 
-func (s *GocqlSessionAdapter) PreparedQuery(stmt string, values ...interface{}) Query {
+func (s *GocqlSessionAdapter) PreparedQuery(stmt string, values ...any) Query {
 	return &GocqlQueryAdapter{q: s.Session.Query(stmt, values...)}
 }
 
@@ -83,7 +83,7 @@ type GocqlBatchAdapter struct {
 	session *gocql.Session
 }
 
-func (b *GocqlBatchAdapter) Query(stmt string, values ...interface{}) {
+func (b *GocqlBatchAdapter) Query(stmt string, values ...any) {
 	b.batch.Query(stmt, values...)
 }
 

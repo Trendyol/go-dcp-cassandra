@@ -2,6 +2,7 @@ package cassandra
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -43,15 +44,15 @@ func newBulk(session Session) *Bulk {
 
 func TestBulkOperations(t *testing.T) {
 	t.Run("Insert", func(t *testing.T) {
-		m := &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}
+		m := &Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}
 		assert.Equal(t, Insert, m.Operation)
 	})
 	t.Run("Update", func(t *testing.T) {
-		m := &Raw{Table: "t", Document: map[string]interface{}{"name": "x"}, Filter: map[string]interface{}{"id": "1"}, Operation: Update}
+		m := &Raw{Table: "t", Document: map[string]any{"name": "x"}, Filter: map[string]any{"id": "1"}, Operation: Update}
 		assert.Equal(t, Update, m.Operation)
 	})
 	t.Run("Delete", func(t *testing.T) {
-		m := &Raw{Table: "t", Filter: map[string]interface{}{"id": "1"}, Operation: Delete}
+		m := &Raw{Table: "t", Filter: map[string]any{"id": "1"}, Operation: Delete}
 		assert.Equal(t, Delete, m.Operation)
 	})
 }
@@ -77,7 +78,7 @@ func TestNewBulk_InvalidSession(t *testing.T) {
 
 func TestBulk_Insert_NilSession(t *testing.T) {
 	b := &Bulk{}
-	err := b.insert(&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert})
+	err := b.insert(&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "session is nil")
 }
@@ -86,33 +87,33 @@ func TestBulk_Insert_NilSession(t *testing.T) {
 
 func TestBulk_InsertUpdateDelete_Success(t *testing.T) {
 	b := newBulk(&mockSession{})
-	assert.NoError(t, b.insert(&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}))
+	assert.NoError(t, b.insert(&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}))
 	assert.NoError(t, b.update(&Raw{
-		Table: "t", Document: map[string]interface{}{"name": "x"},
-		Filter: map[string]interface{}{"id": "1"}, Operation: Update,
+		Table: "t", Document: map[string]any{"name": "x"},
+		Filter: map[string]any{"id": "1"}, Operation: Update,
 	}))
-	assert.NoError(t, b.delete(&Raw{Table: "t", Filter: map[string]interface{}{"id": "1"}, Operation: Delete}))
+	assert.NoError(t, b.delete(&Raw{Table: "t", Filter: map[string]any{"id": "1"}, Operation: Delete}))
 }
 
 // --- Error handling ---
 
 func TestBulk_WorkerHandlesError(t *testing.T) {
 	b := newBulk(&mockSessionErr{})
-	err := b.insert(&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert})
+	err := b.insert(&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mock error")
 }
 
 func TestBulk_ErrorHandling_Operations(t *testing.T) {
 	b := newBulk(&mockSessionErr{})
-	assert.Error(t, b.insert(&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}))
+	assert.Error(t, b.insert(&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}))
 	assert.Error(t, b.update(&Raw{
 		Table:     "t",
-		Document:  map[string]interface{}{"f": "v"},
-		Filter:    map[string]interface{}{"id": "1"},
+		Document:  map[string]any{"f": "v"},
+		Filter:    map[string]any{"id": "1"},
 		Operation: Update,
 	}))
-	assert.Error(t, b.delete(&Raw{Table: "t", Filter: map[string]interface{}{"id": "1"}, Operation: Delete}))
+	assert.Error(t, b.delete(&Raw{Table: "t", Filter: map[string]any{"id": "1"}, Operation: Delete}))
 }
 
 func TestBulk_WriteError_Panics(t *testing.T) {
@@ -122,7 +123,7 @@ func TestBulk_WriteError_Panics(t *testing.T) {
 		assert.NotNil(t, recover(), "Expected panic on Cassandra write error")
 	}()
 
-	b.requestSync(BatchItem{Model: &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}})
+	b.requestSync(BatchItem{Model: &Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}})
 }
 
 // --- Flush triggered by size ---
@@ -136,7 +137,7 @@ func TestFlush_TriggeredBySize(t *testing.T) {
 	ctx := newListenerContext(func() {})
 	for i := 0; i < 3; i++ {
 		b.AddActions(ctx, time.Now(), []Model{
-			&Raw{Table: "t", Document: map[string]interface{}{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
+			&Raw{Table: "t", Document: map[string]any{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
 		})
 	}
 
@@ -174,7 +175,7 @@ func TestFlush_TriggeredByTicker(t *testing.T) {
 
 	ctx := newListenerContext(func() {})
 	b.AddActions(ctx, time.Now(), []Model{
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert},
 	})
 
 	// StartBulk in background, let ticker fire
@@ -206,7 +207,7 @@ func TestFlush_SingleFlushAtATime(t *testing.T) {
 
 	// First event triggers flush 1
 	b.AddActions(ctx, time.Now(), []Model{
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert},
 	})
 	<-writeStarted // flush 1 is writing
 
@@ -214,7 +215,7 @@ func TestFlush_SingleFlushAtATime(t *testing.T) {
 	written2 := make(chan struct{})
 	go func() {
 		b.AddActions(ctx, time.Now(), []Model{
-			&Raw{Table: "t", Document: map[string]interface{}{"id": "2"}, Operation: Insert},
+			&Raw{Table: "t", Document: map[string]any{"id": "2"}, Operation: Insert},
 		})
 		close(written2)
 	}()
@@ -254,7 +255,7 @@ func TestFlush_AcksAfterWrite(t *testing.T) {
 
 	ctx := newListenerContext(func() { ackCalled = true })
 	b.AddActions(ctx, time.Now(), []Model{
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert},
 	})
 
 	<-writeStarted
@@ -303,7 +304,7 @@ func TestFlush_CommitAfterAllWrites(t *testing.T) {
 	ctx := newListenerContext(func() {})
 	for i := 0; i < 3; i++ {
 		b.AddActions(ctx, time.Now(), []Model{
-			&Raw{Table: "t", Document: map[string]interface{}{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
+			&Raw{Table: "t", Document: map[string]any{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
 		})
 	}
 
@@ -330,12 +331,12 @@ func runBatchPerEventTest(t *testing.T, batchPerEvent bool, expectedCount int64)
 
 	ctx := newListenerContext(func() {})
 	b.AddActions(ctx, time.Now(), []Model{
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "2"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "2"}, Operation: Insert},
 	})
 	b.AddActions(ctx, time.Now(), []Model{
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "3"}, Operation: Insert},
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "4"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "3"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "4"}, Operation: Insert},
 	})
 
 	b.flushMu.Lock()
@@ -378,7 +379,7 @@ func TestMaxInFlightRequests_CapsParallelism(t *testing.T) {
 
 	items := make([]Model, 9)
 	for i := range items {
-		items[i] = &Raw{Table: "t", Document: map[string]interface{}{"id": fmt.Sprintf("%d", i)}, Operation: Insert}
+		items[i] = &Raw{Table: "t", Document: map[string]any{"id": fmt.Sprintf("%d", i)}, Operation: Insert}
 	}
 
 	ctx := newListenerContext(func() {})
@@ -403,7 +404,7 @@ func TestMaxInFlightRequests_CapsParallelism(t *testing.T) {
 func TestAddActions_WriteTimestamp_None(t *testing.T) {
 	b := newBulk(&mockSession{})
 	b.writeTimestamp = writeTimestampNone
-	raw := &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}
+	raw := &Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}
 	b.AddActions(newListenerContext(func() {}), time.Now(), []Model{raw})
 	assert.Equal(t, int64(0), raw.Timestamp)
 }
@@ -412,7 +413,7 @@ func TestAddActions_WriteTimestamp_EventTime(t *testing.T) {
 	b := newBulk(&mockSession{})
 	b.writeTimestamp = writeTimestampEventTime
 	eventTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	raw := &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}
+	raw := &Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}
 	b.AddActions(newListenerContext(func() {}), eventTime, []Model{raw})
 	assert.Equal(t, eventTime.UnixMicro(), raw.Timestamp)
 }
@@ -421,7 +422,7 @@ func TestAddActions_WriteTimestamp_Now(t *testing.T) {
 	b := newBulk(&mockSession{})
 	b.writeTimestamp = writeTimestampNow
 	before := time.Now().UnixMicro()
-	raw := &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}
+	raw := &Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert}
 	b.AddActions(newListenerContext(func() {}), time.Now(), []Model{raw})
 	after := time.Now().UnixMicro()
 	assert.GreaterOrEqual(t, raw.Timestamp, before)
@@ -434,7 +435,7 @@ func TestAddActions_Rebalancing_NoEnqueue(t *testing.T) {
 	b := newBulk(&mockSession{})
 	b.isDcpRebalancing = 1
 	b.AddActions(newListenerContext(func() {}), time.Now(), []Model{
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert},
 	})
 	assert.Equal(t, 0, len(b.batchBuffer))
 }
@@ -467,26 +468,26 @@ func TestResolveTimestamp(t *testing.T) {
 func TestEstimateSize(t *testing.T) {
 	raw := &Raw{
 		Table:     "t",
-		Document:  map[string]interface{}{"data": `{"key":"value"}`},
+		Document:  map[string]any{"data": `{"key":"value"}`},
 		Operation: Insert,
 	}
 	size := estimateSize(raw)
 	assert.Equal(t, len("data")+len(`{"key":"value"}`), size)
 }
 
-// --- join ---
+// --- strings.Join (was custom join) ---
 
-func TestJoin(t *testing.T) {
-	assert.Equal(t, "a,b,c", join([]string{"a", "b", "c"}, ","))
+func TestStringsJoin(t *testing.T) {
+	assert.Equal(t, "a,b,c", strings.Join([]string{"a", "b", "c"}, ","))
 }
 
 // --- Prepared statement caching ---
 
 func TestBulk_PreparedStatementCaching(t *testing.T) {
 	b := newBulk(&mockSession{})
-	raw := &Raw{Table: "test_table", Document: map[string]interface{}{"id": "1", "name": "test"}, Operation: Insert}
+	raw := &Raw{Table: "test_table", Document: map[string]any{"id": "1", "name": "test"}, Operation: Insert}
 	columns := sortedKeys(raw.Document)
-	cacheKey := fmt.Sprintf("INSERT:%s:%s:%v", raw.Table, join(columns, ","), false)
+	cacheKey := fmt.Sprintf("INSERT:%s:%s:%v", raw.Table, strings.Join(columns, ","), false)
 	q1 := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
 	q2 := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
 	assert.NotEmpty(t, q1)
@@ -500,8 +501,8 @@ func TestBulk_PreparedStatementCaching(t *testing.T) {
 // This test fails on master and passes with the fix.
 func TestBulk_CacheKeyCollision(t *testing.T) {
 	b := newBulk(&mockSession{})
-	raw1 := &Raw{Table: "t", Document: map[string]interface{}{"alpha": "1", "beta": "2"}, Operation: Insert}
-	raw2 := &Raw{Table: "t", Document: map[string]interface{}{"gamma": "1", "delta": "2"}, Operation: Insert}
+	raw1 := &Raw{Table: "t", Document: map[string]any{"alpha": "1", "beta": "2"}, Operation: Insert}
+	raw2 := &Raw{Table: "t", Document: map[string]any{"gamma": "1", "delta": "2"}, Operation: Insert}
 
 	q1, _ := b.buildInsertValues(raw1, false)
 	q2, _ := b.buildInsertValues(raw2, false)
@@ -520,7 +521,7 @@ func TestBulk_ConcurrentInserts(t *testing.T) {
 			defer wg.Done()
 			_ = b.insert(&Raw{
 				Table:     fmt.Sprintf("table%d", id%3),
-				Document:  map[string]interface{}{"id": fmt.Sprintf("doc%d", id), "name": fmt.Sprintf("test%d", id)},
+				Document:  map[string]any{"id": fmt.Sprintf("doc%d", id), "name": fmt.Sprintf("test%d", id)},
 				Operation: Insert,
 			})
 		}(i)
@@ -556,7 +557,7 @@ func TestBulk_Close_WaitsForStartBulk(t *testing.T) {
 
 	ctx := newListenerContext(func() {})
 	b.AddActions(ctx, time.Now(), []Model{
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert},
 	})
 
 	go b.StartBulk()
@@ -590,7 +591,7 @@ func TestBulk_MetricRace(t *testing.T) {
 		ctx := newListenerContext(func() {})
 		for i := 0; i < 10; i++ {
 			b.AddActions(ctx, time.Now(), []Model{
-				&Raw{Table: "t", Document: map[string]interface{}{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
+				&Raw{Table: "t", Document: map[string]any{"id": fmt.Sprintf("%d", i)}, Operation: Insert},
 			})
 		}
 	}()
@@ -624,8 +625,8 @@ func TestFlush_UpdatesMetrics(t *testing.T) {
 
 	ctx := newListenerContext(func() {})
 	b.AddActions(ctx, time.Now(), []Model{
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert},
-		&Raw{Table: "t", Document: map[string]interface{}{"id": "2"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "1"}, Operation: Insert},
+		&Raw{Table: "t", Document: map[string]any{"id": "2"}, Operation: Insert},
 	})
 
 	b.flushMu.Lock()
@@ -642,8 +643,8 @@ func TestFlush_UpdatesMetrics(t *testing.T) {
 
 type mockSession struct{}
 
-func (m *mockSession) Query(string, ...interface{}) Query         { return &mockQuery{} }
-func (m *mockSession) PreparedQuery(string, ...interface{}) Query { return &mockQuery{} }
+func (m *mockSession) Query(string, ...any) Query         { return &mockQuery{} }
+func (m *mockSession) PreparedQuery(string, ...any) Query { return &mockQuery{} }
 func (m *mockSession) NewBatch(BatchType) Batch                   { return &mockBatch{} }
 func (m *mockSession) Close()                                     {}
 
@@ -653,15 +654,15 @@ func (m *mockQuery) Exec() error { return nil }
 
 type mockBatch struct{ size int }
 
-func (m *mockBatch) Query(string, ...interface{}) { m.size++ }
+func (m *mockBatch) Query(string, ...any) { m.size++ }
 func (m *mockBatch) Size() int                    { return m.size }
 func (m *mockBatch) ExecuteBatch() error          { return nil }
 func (m *mockBatch) WithTimestamp(int64)          {}
 
 type mockSessionErr struct{}
 
-func (m *mockSessionErr) Query(string, ...interface{}) Query         { return &mockQueryErr{} }
-func (m *mockSessionErr) PreparedQuery(string, ...interface{}) Query { return &mockQueryErr{} }
+func (m *mockSessionErr) Query(string, ...any) Query         { return &mockQueryErr{} }
+func (m *mockSessionErr) PreparedQuery(string, ...any) Query { return &mockQueryErr{} }
 func (m *mockSessionErr) NewBatch(BatchType) Batch                   { return &mockBatchErr{} }
 func (m *mockSessionErr) Close()                                     {}
 
@@ -671,7 +672,7 @@ func (m *mockQueryErr) Exec() error { return fmt.Errorf("mock error") }
 
 type mockBatchErr struct{ size int }
 
-func (m *mockBatchErr) Query(string, ...interface{}) { m.size++ }
+func (m *mockBatchErr) Query(string, ...any) { m.size++ }
 func (m *mockBatchErr) Size() int                    { return m.size }
 func (m *mockBatchErr) ExecuteBatch() error          { return fmt.Errorf("mock batch error") }
 func (m *mockBatchErr) WithTimestamp(int64)          {}
@@ -679,10 +680,10 @@ func (m *mockBatchErr) WithTimestamp(int64)          {}
 // mockSessionBlocking blocks on PreparedQuery to allow timing assertions.
 type mockSessionBlocking struct{ onQuery func() }
 
-func (m *mockSessionBlocking) Query(string, ...interface{}) Query { return &mockQuery{} }
+func (m *mockSessionBlocking) Query(string, ...any) Query { return &mockQuery{} }
 func (m *mockSessionBlocking) NewBatch(BatchType) Batch           { return &mockBatch{} }
 func (m *mockSessionBlocking) Close()                             {}
-func (m *mockSessionBlocking) PreparedQuery(string, ...interface{}) Query {
+func (m *mockSessionBlocking) PreparedQuery(string, ...any) Query {
 	if m.onQuery != nil {
 		m.onQuery()
 	}
@@ -694,9 +695,9 @@ type mockSessionCounting struct {
 	count *int64
 }
 
-func (m *mockSessionCounting) Query(string, ...interface{}) Query { return &mockQuery{} }
+func (m *mockSessionCounting) Query(string, ...any) Query { return &mockQuery{} }
 func (m *mockSessionCounting) Close()                             {}
-func (m *mockSessionCounting) PreparedQuery(string, ...interface{}) Query {
+func (m *mockSessionCounting) PreparedQuery(string, ...any) Query {
 	atomic.AddInt64(m.count, 1)
 	return &mockQuery{}
 }
@@ -710,7 +711,7 @@ type mockBatchCounting struct {
 	size  int
 }
 
-func (m *mockBatchCounting) Query(string, ...interface{}) { m.size++ }
+func (m *mockBatchCounting) Query(string, ...any) { m.size++ }
 func (m *mockBatchCounting) Size() int                    { return m.size }
 func (m *mockBatchCounting) WithTimestamp(int64)          {}
 func (m *mockBatchCounting) ExecuteBatch() error {
