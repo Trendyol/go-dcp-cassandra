@@ -493,15 +493,13 @@ func TestBulk_ConcurrentInserts(t *testing.T) {
 	b := newBulk(&mockSession{})
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = b.insert(&Raw{
-				Table:     fmt.Sprintf("table%d", id%3),
-				Document:  map[string]interface{}{"id": fmt.Sprintf("doc%d", id), "name": fmt.Sprintf("test%d", id)},
+				Table:     fmt.Sprintf("table%d", i%3),
+				Document:  map[string]interface{}{"id": fmt.Sprintf("doc%d", i), "name": fmt.Sprintf("test%d", i)},
 				Operation: Insert,
 			})
-		}(i)
+		})
 	}
 	wg.Wait()
 }
