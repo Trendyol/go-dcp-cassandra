@@ -1,6 +1,8 @@
 package cassandra
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -65,6 +67,44 @@ func (m *enhancedMockBatch) WithTimestamp(int64) {}
 
 func TestSessionInterfaceImplementation(t *testing.T) {
 	var _ Session = &GocqlSessionAdapter{}
+}
+
+// Regression: the old GocqlSessionAdapter had a custom preparedStmts map
+// with a sync.RWMutex that raced under concurrent access.
+// The fix removed the custom cache entirely, delegating to gocql's thread-safe
+// internal cache. This test verifies concurrent PreparedQuery calls are safe
+// using a thread-safe mock.
+func TestConcurrentPreparedQuery(t *testing.T) {
+	var callCount int64
+	session := &threadSafeMockSession{callCount: &callCount}
+	var wg sync.WaitGroup
+
+	for i := 0; i < 50; i++ {
+		stmt := "SELECT * FROM test WHERE id = ?"
+		if i%2 == 0 {
+			stmt = "INSERT INTO test (id, name) VALUES (?, ?)"
+		}
+		wg.Go(func() {
+			q := session.PreparedQuery(stmt, "val")
+			assert.NotNil(t, q)
+		})
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(50), atomic.LoadInt64(&callCount))
+}
+
+type threadSafeMockSession struct {
+	callCount *int64
+}
+
+func (m *threadSafeMockSession) Query(string, ...interface{}) Query { return &mockQuery{} }
+func (m *threadSafeMockSession) NewBatch(BatchType) Batch           { return &mockBatch{} }
+func (m *threadSafeMockSession) Close()                             {}
+
+func (m *threadSafeMockSession) PreparedQuery(string, ...interface{}) Query {
+	atomic.AddInt64(m.callCount, 1)
+	return &mockQuery{}
 }
 
 func TestQueryInterfaceImplementation(t *testing.T) {

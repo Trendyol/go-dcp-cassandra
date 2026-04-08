@@ -1,8 +1,6 @@
 package cassandra
 
 import (
-	"sync"
-
 	"github.com/gocql/gocql"
 )
 
@@ -34,40 +32,20 @@ type Batch interface {
 
 type GocqlSessionAdapter struct {
 	*gocql.Session
-	preparedStmts map[string]*gocql.Query
-	mutex         sync.RWMutex
 }
 
 func NewGocqlSessionAdapter(session *gocql.Session) *GocqlSessionAdapter {
-	return &GocqlSessionAdapter{
-		Session:       session,
-		preparedStmts: make(map[string]*gocql.Query),
-		mutex:         sync.RWMutex{},
-	}
+	return &GocqlSessionAdapter{Session: session}
 }
 
 func (s *GocqlSessionAdapter) Query(stmt string, values ...interface{}) Query {
 	return &GocqlQueryAdapter{q: s.Session.Query(stmt, values...)}
 }
 
+// PreparedQuery delegates to gocql's internal prepared statement cache,
+// which is already thread-safe. No custom cache needed.
 func (s *GocqlSessionAdapter) PreparedQuery(stmt string, values ...interface{}) Query {
-	s.mutex.RLock()
-	if preparedQuery, exists := s.preparedStmts[stmt]; exists {
-		s.mutex.RUnlock()
-		return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
-	}
-	s.mutex.RUnlock()
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if preparedQuery, exists := s.preparedStmts[stmt]; exists {
-		return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
-	}
-
-	preparedQuery := s.Session.Query(stmt)
-	s.preparedStmts[stmt] = preparedQuery
-	return &GocqlQueryAdapter{q: preparedQuery.Bind(values...)}
+	return &GocqlQueryAdapter{q: s.Session.Query(stmt, values...)}
 }
 
 func (s *GocqlSessionAdapter) NewBatch(batchType BatchType) Batch {

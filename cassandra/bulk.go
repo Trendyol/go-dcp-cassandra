@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +30,7 @@ type Bulk struct {
 	preparedStmts       map[string]string
 	metric              *Metric
 	shutdownCh          chan struct{}
+	shutdownDoneCh      chan struct{}
 	keyspace            string
 	batchBuffer         []BatchItem
 	batchMutex          sync.Mutex
@@ -82,6 +84,7 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 		keyspace:            cfg.Cassandra.Keyspace,
 		dcpCheckpointCommit: dcpCheckpointCommit,
 		shutdownCh:          make(chan struct{}),
+		shutdownDoneCh:      make(chan struct{}),
 		metric:              &Metric{},
 		preparedStmts:       make(map[string]string),
 		batchBuffer:         make([]BatchItem, 0, cfg.Cassandra.BatchSizeLimit),
@@ -100,6 +103,7 @@ func NewBulk(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 
 // StartBulk runs the ticker-driven flush loop. Blocks until Close is called.
 func (b *Bulk) StartBulk() {
+	defer close(b.shutdownDoneCh)
 	for {
 		select {
 		case <-b.batchTicker.C:
@@ -124,6 +128,7 @@ func (b *Bulk) StartBulk() {
 
 func (b *Bulk) Close() {
 	close(b.shutdownCh)
+	<-b.shutdownDoneCh
 	b.session.Close()
 }
 
@@ -133,7 +138,7 @@ func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, acti
 		return
 	}
 
-	b.metric.ProcessLatencyMs = time.Since(eventTime).Milliseconds()
+	atomic.StoreInt64(&b.metric.ProcessLatencyMs, time.Since(eventTime).Milliseconds())
 
 	if len(actions) == 0 {
 		return
@@ -258,8 +263,8 @@ func (b *Bulk) runFlush(batch []BatchItem, thisDone chan struct{}) {
 
 	b.dcpCheckpointCommit()
 
-	b.metric.BulkRequestSize = int64(len(batch))
-	b.metric.BulkRequestProcessLatencyMs = time.Since(startedTime).Milliseconds()
+	atomic.StoreInt64(&b.metric.BulkRequestSize, int64(len(batch)))
+	atomic.StoreInt64(&b.metric.BulkRequestProcessLatencyMs, time.Since(startedTime).Milliseconds())
 }
 
 // writeConcurrently writes all items independently with a semaphore bounding
@@ -465,7 +470,12 @@ func (b *Bulk) GetMetric() *Metric {
 	if b.metric == nil {
 		return &Metric{}
 	}
-	return b.metric
+	return &Metric{
+		ProcessLatencyMs:            atomic.LoadInt64(&b.metric.ProcessLatencyMs),
+		BulkRequestProcessLatencyMs: atomic.LoadInt64(&b.metric.BulkRequestProcessLatencyMs),
+		BulkRequestSize:             atomic.LoadInt64(&b.metric.BulkRequestSize),
+		BulkRequestByteSize:         atomic.LoadInt64(&b.metric.BulkRequestByteSize),
+	}
 }
 
 //nolint:funlen
@@ -551,10 +561,9 @@ func (b *Bulk) buildQueryAndValues(raw *Raw) (string, []interface{}) {
 }
 
 func (b *Bulk) buildInsertValues(raw *Raw, hasTS bool) (string, []interface{}) {
-	cacheKey := fmt.Sprintf("INSERT:%s:%d:%v", raw.Table, len(raw.Document), hasTS)
-	query := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
-
 	columns := sortedKeys(raw.Document)
+	cacheKey := fmt.Sprintf("INSERT:%s:%s:%v", raw.Table, strings.Join(columns, ","), hasTS)
+	query := b.getCachedPreparedStatement(cacheKey, raw, "INSERT")
 	values := make([]interface{}, 0, len(columns)+1)
 	for _, col := range columns {
 		values = append(values, raw.Document[col])
@@ -566,11 +575,11 @@ func (b *Bulk) buildInsertValues(raw *Raw, hasTS bool) (string, []interface{}) {
 }
 
 func (b *Bulk) buildUpdateValues(raw *Raw, hasTS bool) (string, []interface{}) {
-	cacheKey := fmt.Sprintf("UPDATE:%s:%d:%d:%v", raw.Table, len(raw.Document), len(raw.Filter), hasTS)
-	query := b.getCachedPreparedStatement(cacheKey, raw, "UPDATE")
-
 	docColumns := sortedKeys(raw.Document)
 	filterColumns := sortedKeys(raw.Filter)
+	cacheKey := fmt.Sprintf("UPDATE:%s:%s:%s:%v",
+		raw.Table, strings.Join(docColumns, ","), strings.Join(filterColumns, ","), hasTS)
+	query := b.getCachedPreparedStatement(cacheKey, raw, "UPDATE")
 	values := make([]interface{}, 0, len(docColumns)+len(filterColumns)+1)
 
 	if hasTS {
@@ -586,10 +595,9 @@ func (b *Bulk) buildUpdateValues(raw *Raw, hasTS bool) (string, []interface{}) {
 }
 
 func (b *Bulk) buildDeleteValues(raw *Raw, hasTS bool) (string, []interface{}) {
-	cacheKey := fmt.Sprintf("DELETE:%s:%d:%v", raw.Table, len(raw.Filter), hasTS)
-	query := b.getCachedPreparedStatement(cacheKey, raw, "DELETE")
-
 	filterColumns := sortedKeys(raw.Filter)
+	cacheKey := fmt.Sprintf("DELETE:%s:%s:%v", raw.Table, strings.Join(filterColumns, ","), hasTS)
+	query := b.getCachedPreparedStatement(cacheKey, raw, "DELETE")
 	values := make([]interface{}, 0, len(filterColumns)+1)
 
 	if hasTS {

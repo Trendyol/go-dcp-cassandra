@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Trendyol/go-dcp-cassandra/cassandra"
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
@@ -16,9 +17,12 @@ type Mapper func(event couchbase.Event) []cassandra.Model
 var (
 	collectionTableMappings *[]config.CollectionTableMapping
 	mappingCache            = make(map[string]config.CollectionTableMapping)
+	mappingCacheMu          sync.RWMutex
 )
 
 func SetCollectionTableMappings(mappings *[]config.CollectionTableMapping) {
+	mappingCacheMu.Lock()
+	defer mappingCacheMu.Unlock()
 	collectionTableMappings = mappings
 	mappingCache = make(map[string]config.CollectionTableMapping)
 }
@@ -37,6 +41,16 @@ func Map(event couchbase.Event) []cassandra.Model {
 }
 
 func findCollectionTableMapping(collectionName string) config.CollectionTableMapping {
+	mappingCacheMu.RLock()
+	if mapping, exists := mappingCache[collectionName]; exists {
+		mappingCacheMu.RUnlock()
+		return mapping
+	}
+	mappingCacheMu.RUnlock()
+
+	mappingCacheMu.Lock()
+	defer mappingCacheMu.Unlock()
+
 	if mapping, exists := mappingCache[collectionName]; exists {
 		return mapping
 	}
