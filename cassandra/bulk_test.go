@@ -1,6 +1,7 @@
 package cassandra
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -9,6 +10,12 @@ import (
 
 	"github.com/Trendyol/go-dcp/models"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelCodes "go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
 )
@@ -21,6 +28,7 @@ func newBulk(session Session) *Bulk {
 	done := make(chan struct{})
 	close(done)
 	return &Bulk{
+		tracer:              otel.Tracer("test"),
 		session:             session,
 		keyspace:            "ks",
 		dcpCheckpointCommit: func() {},
@@ -120,7 +128,7 @@ func TestBulk_WriteError_Panics(t *testing.T) {
 		assert.NotNil(t, recover(), "Expected panic on Cassandra write error")
 	}()
 
-	b.requestSync(BatchItem{Model: &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}})
+	b.requestSync(context.Background(), BatchItem{Model: &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}})
 }
 
 // --- Flush triggered by size ---
@@ -154,6 +162,7 @@ func TestFlush_TriggeredByTicker(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
 	b := &Bulk{
+		tracer:              otel.Tracer("test"),
 		session:             &mockSessionCounting{count: &writeCount},
 		keyspace:            "ks",
 		dcpCheckpointCommit: func() {},
@@ -281,6 +290,7 @@ func TestFlush_CommitAfterAllWrites(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
 	b := &Bulk{
+		tracer:   otel.Tracer("test"),
 		session:  &mockSessionCounting{count: &writeCount},
 		keyspace: "ks",
 		dcpCheckpointCommit: func() {
@@ -778,6 +788,160 @@ func TestAddActions_SetsProcessLatencyMs(t *testing.T) {
 		"ProcessLatencyMs must reflect time since event")
 }
 
+// --- OpenTelemetry tracing tests ---
+
+func TestRequestSync_CreatesOTelSpan(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	b := newBulk(&mockSession{})
+	b.tracer = tp.Tracer("test")
+	ctx := context.Background()
+
+	b.requestSync(ctx, BatchItem{
+		Model: &Raw{
+			Table:     "orders",
+			Document:  map[string]interface{}{"id": "1", "status": "active"},
+			Operation: Insert,
+		},
+	})
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "cassandra.write", spans[0].Name)
+
+	attrs := spans[0].Attributes
+	found := map[string]string{}
+	for _, a := range attrs {
+		found[string(a.Key)] = a.Value.AsString()
+	}
+	assert.Equal(t, "orders", found["db.cassandra.table"])
+	assert.Equal(t, string(Insert), found["db.operation"])
+}
+
+func TestRequestSync_RecordsErrorOnSpan(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	b := newBulk(&mockSessionErr{})
+	b.tracer = tp.Tracer("test")
+	ctx := context.Background()
+
+	assert.Panics(t, func() {
+		b.requestSync(ctx, BatchItem{
+			Model: &Raw{
+				Table:     "t",
+				Document:  map[string]interface{}{"id": "1"},
+				Operation: Insert,
+			},
+		})
+	})
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 1)
+	assert.Equal(t, otelCodes.Error, spans[0].Status.Code)
+	assert.NotEmpty(t, spans[0].Events, "span should have recorded error event")
+}
+
+func TestRunFlush_CreatesFlushSpan(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	b := newBulk(&mockSession{})
+	b.tracer = tp.Tracer("test")
+	done := make(chan struct{})
+
+	batch := []BatchItem{
+		{Model: &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}, Ack: func() {}},
+	}
+	b.runFlush(context.Background(), batch, done)
+
+	spans := exporter.GetSpans()
+	var flushSpan *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == "cassandra.flush" {
+			flushSpan = &spans[i]
+			break
+		}
+	}
+	require.NotNil(t, flushSpan, "expected cassandra.flush span")
+
+	var batchSizeAttr *attribute.KeyValue
+	for _, a := range flushSpan.Attributes {
+		if a.Key == "batch.size" {
+			batchSizeAttr = &a
+			break
+		}
+	}
+	require.NotNil(t, batchSizeAttr)
+	assert.Equal(t, int64(1), batchSizeAttr.Value.AsInt64())
+}
+
+func TestWriteUnloggedBatch_CreatesBatchSpan(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	b := newBulk(&mockSession{})
+	b.tracer = tp.Tracer("test")
+	items := []BatchItem{
+		{Model: &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}},
+		{Model: &Raw{Table: "t", Document: map[string]interface{}{"id": "2"}, Operation: Insert}},
+	}
+	b.writeUnloggedBatch(context.Background(), items)
+
+	spans := exporter.GetSpans()
+	var batchSpan *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == "cassandra.batch" {
+			batchSpan = &spans[i]
+			break
+		}
+	}
+	require.NotNil(t, batchSpan, "expected cassandra.batch span")
+
+	var itemsAttr *attribute.KeyValue
+	for _, a := range batchSpan.Attributes {
+		if a.Key == "batch.items" {
+			itemsAttr = &a
+			break
+		}
+	}
+	require.NotNil(t, itemsAttr)
+	assert.Equal(t, int64(2), itemsAttr.Value.AsInt64())
+}
+
+func TestWriteUnloggedBatch_RecordsErrorOnSpan(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	b := newBulk(&mockSessionBatchErr{})
+	b.tracer = tp.Tracer("test")
+	items := []BatchItem{
+		{Model: &Raw{Table: "t", Document: map[string]interface{}{"id": "1"}, Operation: Insert}},
+	}
+
+	assert.Panics(t, func() {
+		b.writeUnloggedBatch(context.Background(), items)
+	})
+
+	spans := exporter.GetSpans()
+	var batchSpan *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == "cassandra.batch" {
+			batchSpan = &spans[i]
+			break
+		}
+	}
+	require.NotNil(t, batchSpan, "expected cassandra.batch span")
+	assert.Equal(t, otelCodes.Error, batchSpan.Status.Code)
+	assert.NotEmpty(t, batchSpan.Events, "span should have recorded error event")
+}
+
 // --- Mock implementations ---
 
 type mockSession struct{}
@@ -879,3 +1043,11 @@ func (m *mockBatchCounting) ExecuteBatch() error {
 	atomic.AddInt64(m.count, 1)
 	return nil
 }
+
+// mockSessionBatchErr returns a session whose batch ExecuteBatch always fails.
+type mockSessionBatchErr struct{}
+
+func (m *mockSessionBatchErr) Query(string, ...interface{}) Query         { return &mockQuery{} }
+func (m *mockSessionBatchErr) PreparedQuery(string, ...interface{}) Query { return &mockQuery{} }
+func (m *mockSessionBatchErr) Close()                                     {}
+func (m *mockSessionBatchErr) NewBatch(BatchType) Batch                   { return &mockBatchErr{} }

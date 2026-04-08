@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -8,9 +9,10 @@ import (
 )
 
 type CollectionTableMapping struct {
-	FieldMappings map[string]string `yaml:"fieldMappings"`
-	Collection    string            `yaml:"collection"`
-	TableName     string            `yaml:"tableName"`
+	FieldMappings    map[string]string `yaml:"fieldMappings"`
+	PrimaryKeyFields []string          `yaml:"primaryKeyFields,omitempty"`
+	Collection       string            `yaml:"collection"`
+	TableName        string            `yaml:"tableName"`
 }
 
 type Cassandra struct {
@@ -138,4 +140,18 @@ func (c *Cassandra) setRetryDefaults() {
 
 func (c *Connector) ApplyDefaults() {
 	c.Cassandra.setDefaults()
+}
+
+func (c *Connector) Validate() error {
+	for _, m := range c.Cassandra.CollectionTableMapping {
+		for _, pk := range m.PrimaryKeyFields {
+			if _, exists := m.FieldMappings[pk]; !exists {
+				return fmt.Errorf(
+					"primaryKeyField %q not found in fieldMappings for table %s",
+					pk, m.TableName,
+				)
+			}
+		}
+	}
+	return nil
 }

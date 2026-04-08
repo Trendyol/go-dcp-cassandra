@@ -69,6 +69,10 @@ func newConnector(cf any, mapper Mapper) (Connector, error) {
 	}
 	cfg.ApplyDefaults()
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	var finalMapper Mapper
 	if len(cfg.Cassandra.CollectionTableMapping) > 0 {
 		finalMapper = connectorpkg.DefaultMapper
@@ -171,7 +175,7 @@ func (c *connector) listener(ctx *models.ListenerContext) {
 	case models.DcpExpiration:
 		e = couchbase.NewExpireEvent(event.Key, nil, event.CollectionName, event.EventTime, event.Cas, event.VbID)
 	case models.DcpDeletion:
-		e = couchbase.NewDeleteEvent(event.Key, nil, event.CollectionName, event.EventTime, event.Cas, event.VbID)
+		e = couchbase.NewDeleteEvent(event.Key, event.Value, event.CollectionName, event.EventTime, event.Cas, event.VbID)
 	default:
 		ctx.Ack()
 		return
