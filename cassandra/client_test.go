@@ -3,7 +3,7 @@ package cassandra
 import (
 	"testing"
 
-	"github.com/gocql/gocql"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/stretchr/testify/assert"
 
 	config "github.com/Trendyol/go-dcp-cassandra/configs"

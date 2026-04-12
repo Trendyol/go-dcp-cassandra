@@ -1,7 +1,7 @@
 package cassandra
 
 import (
-	"github.com/gocql/gocql"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
 type BatchType int
@@ -62,8 +62,7 @@ func (s *GocqlSessionAdapter) NewBatch(batchType BatchType) Batch {
 	}
 
 	return &GocqlBatchAdapter{
-		batch:   s.Session.NewBatch(gocqlBatchType),
-		session: s.Session,
+		batch: s.Batch(gocqlBatchType),
 	}
 }
 
@@ -76,8 +75,7 @@ func (q *GocqlQueryAdapter) Exec() error {
 }
 
 type GocqlBatchAdapter struct {
-	batch   *gocql.Batch
-	session *gocql.Session
+	batch *gocql.Batch
 }
 
 func (b *GocqlBatchAdapter) Query(stmt string, values ...interface{}) {
@@ -93,5 +91,5 @@ func (b *GocqlBatchAdapter) Size() int {
 }
 
 func (b *GocqlBatchAdapter) ExecuteBatch() error {
-	return b.session.ExecuteBatch(b.batch)
+	return b.batch.Exec()
 }
