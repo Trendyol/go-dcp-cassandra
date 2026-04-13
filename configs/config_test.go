@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCassandra_SetDefaults(t *testing.T) {
@@ -166,6 +167,53 @@ func TestConnector_ApplyDefaults(t *testing.T) {
 	config.Cassandra.Consistency = ""
 	config.ApplyDefaults()
 	assert.Equal(t, "QUORUM", config.Cassandra.Consistency, "Empty consistency should default to QUORUM")
+}
+
+func TestValidate_PrimaryKeyFields_Valid(t *testing.T) {
+	c := &Connector{
+		Cassandra: Cassandra{
+			CollectionTableMapping: []CollectionTableMapping{
+				{
+					TableName:        "orders",
+					PrimaryKeyFields: []string{"id", "partition_id"},
+					FieldMappings:    map[string]string{"id": "_key", "partition_id": "partId", "status": "status"},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Validate())
+}
+
+func TestValidate_PrimaryKeyFields_Invalid(t *testing.T) {
+	c := &Connector{
+		Cassandra: Cassandra{
+			CollectionTableMapping: []CollectionTableMapping{
+				{
+					TableName:        "orders",
+					PrimaryKeyFields: []string{"id", "nonexistent"},
+					FieldMappings:    map[string]string{"id": "_key", "status": "status"},
+				},
+			},
+		},
+	}
+	err := c.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nonexistent")
+	assert.Contains(t, err.Error(), "orders")
+}
+
+func TestValidate_NoPrimaryKeyFields(t *testing.T) {
+	c := &Connector{
+		Cassandra: Cassandra{
+			CollectionTableMapping: []CollectionTableMapping{
+				{
+					TableName:     "items",
+					FieldMappings: map[string]string{"id": "_key"},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Validate(), "no PrimaryKeyFields should pass validation")
 }
 
 func TestConnector_Validation(t *testing.T) {

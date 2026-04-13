@@ -177,6 +177,18 @@ func buildDeleteModel(mapping config.CollectionTableMapping, event couchbase.Eve
 		}
 	}
 
+	if len(mapping.PrimaryKeyFields) > 0 {
+		pkSet := make(map[string]struct{}, len(mapping.PrimaryKeyFields))
+		for _, pk := range mapping.PrimaryKeyFields {
+			pkSet[pk] = struct{}{}
+		}
+		for col := range filter {
+			if _, ok := pkSet[col]; !ok {
+				delete(filter, col)
+			}
+		}
+	}
+
 	return cassandra.Raw{
 		Table:     mapping.TableName,
 		Filter:    filter,

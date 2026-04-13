@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Trendyol/go-dcp-cassandra/cassandra"
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
@@ -302,6 +303,146 @@ func TestConvertFieldValue_DateInt(t *testing.T) {
 func TestConvertFieldValue_NonDateField(t *testing.T) {
 	v := convertFieldValue("name", "hello")
 	assert.Equal(t, "hello", v)
+}
+
+// --- PrimaryKeyFields tests (tombstone reduction) ---
+
+func TestMap_PrimaryKeyFields_Delete(t *testing.T) {
+	mappings := []config.CollectionTableMapping{
+		{
+			Collection:       "orders",
+			TableName:        "orders_table",
+			PrimaryKeyFields: []string{"id", "partition_id"},
+			FieldMappings: map[string]string{
+				"id":           "_key",
+				"partition_id": "partitionId",
+				"status":       "status",
+				"data":         "documentData",
+			},
+		},
+	}
+	SetCollectionTableMappings(&mappings)
+
+	event := couchbase.NewDeleteEvent(
+		[]byte("order_1"),
+		[]byte(`{"partitionId":"p1","status":"active"}`),
+		"orders", time.Now(), 1, 0,
+	)
+
+	result := Map(event)
+	require.Len(t, result, 1)
+
+	raw := result[0].(*cassandra.Raw)
+	assert.Equal(t, cassandra.Delete, raw.Operation)
+	assert.Equal(t, "order_1", raw.Filter["id"])
+	assert.Equal(t, "p1", raw.Filter["partition_id"])
+
+	_, hasStatus := raw.Filter["status"]
+	assert.False(t, hasStatus, "non-PK field 'status' must be excluded from delete filter")
+
+	_, hasData := raw.Filter["data"]
+	assert.False(t, hasData, "documentData field must be excluded from delete filter")
+}
+
+func TestMap_NoPrimaryKeyFields_Delete(t *testing.T) {
+	mappings := []config.CollectionTableMapping{
+		{
+			Collection:    "items",
+			TableName:     "items_table",
+			FieldMappings: map[string]string{"id": "_key", "status": "status"},
+		},
+	}
+	SetCollectionTableMappings(&mappings)
+
+	event := couchbase.NewDeleteEvent(
+		[]byte("item_1"),
+		[]byte(`{"status":"deleted"}`),
+		"items", time.Now(), 1, 0,
+	)
+
+	result := Map(event)
+	require.Len(t, result, 1)
+
+	raw := result[0].(*cassandra.Raw)
+	assert.Equal(t, "item_1", raw.Filter["id"])
+	assert.Equal(t, "deleted", raw.Filter["status"],
+		"without PrimaryKeyFields all filter fields should be included")
+}
+
+func TestMap_PrimaryKeyFields_AllFieldsArePK(t *testing.T) {
+	mappings := []config.CollectionTableMapping{
+		{
+			Collection:       "events",
+			TableName:        "events_table",
+			PrimaryKeyFields: []string{"id", "ts"},
+			FieldMappings:    map[string]string{"id": "_key", "ts": "timestamp"},
+		},
+	}
+	SetCollectionTableMappings(&mappings)
+
+	event := couchbase.NewDeleteEvent(
+		[]byte("ev_1"),
+		[]byte(`{"timestamp":"2024-01-01"}`),
+		"events", time.Now(), 1, 0,
+	)
+
+	result := Map(event)
+	require.Len(t, result, 1)
+
+	raw := result[0].(*cassandra.Raw)
+	assert.Equal(t, "ev_1", raw.Filter["id"])
+	assert.Equal(t, "2024-01-01", raw.Filter["ts"])
+	assert.Len(t, raw.Filter, 2, "all fields are PK so all should remain")
+}
+
+func TestMap_PrimaryKeyFields_Expiration(t *testing.T) {
+	mappings := []config.CollectionTableMapping{
+		{
+			Collection:       "orders",
+			TableName:        "orders_table",
+			PrimaryKeyFields: []string{"id"},
+			FieldMappings:    map[string]string{"id": "_key", "status": "status"},
+		},
+	}
+	SetCollectionTableMappings(&mappings)
+
+	event := couchbase.NewExpireEvent(
+		[]byte("order_1"), nil,
+		"orders", time.Now(), 1, 0,
+	)
+
+	result := Map(event)
+	require.Len(t, result, 1)
+
+	raw := result[0].(*cassandra.Raw)
+	assert.Equal(t, cassandra.Delete, raw.Operation)
+	assert.Len(t, raw.Filter, 1, "only PK field should remain for expiration")
+	assert.Equal(t, "order_1", raw.Filter["id"])
+}
+
+func TestMap_PrimaryKeyFields_SinglePK(t *testing.T) {
+	mappings := []config.CollectionTableMapping{
+		{
+			Collection:       "docs",
+			TableName:        "docs_table",
+			PrimaryKeyFields: []string{"id"},
+			FieldMappings:    map[string]string{"id": "_key", "status": "status", "name": "name"},
+		},
+	}
+	SetCollectionTableMappings(&mappings)
+
+	event := couchbase.NewDeleteEvent(
+		[]byte("doc_1"),
+		[]byte(`{"status":"x","name":"y"}`),
+		"docs", time.Now(), 1, 0,
+	)
+
+	result := Map(event)
+	require.Len(t, result, 1)
+
+	raw := result[0].(*cassandra.Raw)
+	assert.Len(t, raw.Filter, 1, "only PK field should remain")
+	assert.Equal(t, "doc_1", raw.Filter["id"])
 }
 
 // --- Concurrency tests ---
