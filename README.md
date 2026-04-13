@@ -185,15 +185,28 @@ Check out on [go-dcp](https://github.com/Trendyol/go-dcp#configuration)
 | `cassandra.tableName`               | string                   | no       |              | Target table name (used when no collection mapping is configured)                                                                                    |
 | `cassandra.collectionTableMapping`  | []CollectionTableMapping | no       |              | Used by the default mapper. See next section                                                                                                         |
 
+### DCP Event Contract
+
+When implementing a custom mapper, the `couchbase.Event` you receive has different payloads depending on the event type:
+
+| Event Type | `event.Key` | `event.Value` | Description |
+|------------|-------------|---------------|-------------|
+| Mutation   | Document key | Full document body (JSON) | Document was created or updated |
+| Deletion   | Document key | Document body (may be present depending on DCP stream config) | Document was deleted |
+| Expiration | Document key | Always nil (Couchbase DCP protocol does not include body for expirations) | Document TTL expired |
+
+When writing a custom mapper, rely on the event type to determine the operation rather than checking whether `event.Value` is nil.
+
 ### Collection Table Mapping Configuration
 
 Collection table mapping configuration is optional. This configuration should only be provided if you are using the default mapper. If you are implementing your own custom mapper function, this configuration is not needed.
 
 | Variable                                                 | Type    | Required | Default | Description                                                                  |
 |----------------------------------------------------------|---------|----------|---------|------------------------------------------------------------------------------|
-| `cassandra.collectionTableMapping[].collection`          | string  | yes      |         | Couchbase collection name                                                    |
-| `cassandra.collectionTableMapping[].tableName`           | string  | yes      |         | Target Cassandra table name                                                  |
-| `cassandra.collectionTableMapping[].fieldMappings`       | map     | yes      |         | Mapping between Cassandra columns and JSON document fields. Key is Cassandra column name, value is source field name. Special values: "id" for document key, "documentData" for full JSON document |
+| `cassandra.collectionTableMapping[].collection`          | string   | yes      |         | Couchbase collection name                                                    |
+| `cassandra.collectionTableMapping[].tableName`           | string   | yes      |         | Target Cassandra table name                                                  |
+| `cassandra.collectionTableMapping[].fieldMappings`       | map      | yes      |         | Mapping between Cassandra columns and JSON document fields. Key is Cassandra column name, value is source field name. Special values: `_key` for document key, `documentData` for full JSON document |
+| `cassandra.collectionTableMapping[].primaryKeyFields`    | []string | no       |         | Cassandra column names that form the primary key. When set, DELETE and expiration operations only include these columns in the WHERE clause, preventing tombstones from null non-PK columns. Each name must exist as a key in `fieldMappings`. |
 
 #### Field Mappings Example
 
@@ -228,6 +241,28 @@ The resulting Cassandra row will have:
 - `email_address`: "john@example.com"
 - `raw_data`: Full JSON string
 - `meta_info`: {"createdAt": "2024-01-01T00:00:00Z", "version": 1}
+
+#### PrimaryKeyFields Example
+
+When a document is deleted or expires, the default mapper builds a `DELETE FROM table WHERE ...` query using all mapped fields. For tables with non-PK columns, this writes null values and creates Cassandra tombstones over time.
+
+Setting `primaryKeyFields` limits the WHERE clause to only the primary key columns:
+
+```yaml
+collectionTableMapping:
+  - collection: orders
+    tableName: orders_table
+    primaryKeyFields: ["order_id", "partition_id"]
+    fieldMappings:
+      order_id: "_key"
+      partition_id: "partitionId"
+      status: "status"
+      data: "documentData"
+```
+
+With this config, a delete event produces `DELETE FROM orders_table WHERE order_id = ? AND partition_id = ?` instead of including `status` and `data` in the query.
+
+Without `primaryKeyFields`, existing behavior is preserved and all mapped fields are included.
 
 ## Exposed metrics
 
