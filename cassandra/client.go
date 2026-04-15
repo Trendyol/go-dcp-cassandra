@@ -5,6 +5,7 @@ import (
 	"log"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/apache/cassandra-gocql-driver/v2/lz4"
 	"github.com/apache/cassandra-gocql-driver/v2/snappy"
 
 	config "github.com/Trendyol/go-dcp-cassandra/configs"
@@ -88,8 +89,7 @@ func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 	case "snappy":
 		cluster.Compressor = &snappy.SnappyCompressor{}
 	case "lz4":
-		log.Println("LZ4 compression is not available in standard gocql, using snappy instead")
-		cluster.Compressor = &snappy.SnappyCompressor{}
+		cluster.Compressor = &lz4.LZ4Compressor{}
 	default:
 	}
 
