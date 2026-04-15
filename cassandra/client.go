@@ -111,7 +111,7 @@ func NewCassandraSession(cfg config.Cassandra) (Session, error) {
 	case "round_robin":
 		cluster.PoolConfig.HostSelectionPolicy = gocql.RoundRobinHostPolicy()
 	default:
-		cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.RoundRobinHostPolicy())
+		cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.RoundRobinHostPolicy(), gocql.ShuffleReplicas())
 	}
 
 	session, err := cluster.CreateSession()
