@@ -17,7 +17,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/config"
 )
 
 func newListenerContext(ackFn func()) *models.ListenerContext {

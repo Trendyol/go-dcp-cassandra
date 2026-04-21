@@ -8,11 +8,9 @@ import (
 	"sync"
 
 	"github.com/Trendyol/go-dcp-cassandra/cassandra"
-	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/config"
 	"github.com/Trendyol/go-dcp-cassandra/couchbase"
 )
-
-type Mapper func(event couchbase.Event) []cassandra.Model
 
 var (
 	collectionTableMappings *[]config.CollectionTableMapping

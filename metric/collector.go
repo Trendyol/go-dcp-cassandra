@@ -1,10 +1,10 @@
 package metric
 
 import (
-	"github.com/Trendyol/go-dcp-cassandra/cassandra"
-
 	"github.com/Trendyol/go-dcp/helpers"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/Trendyol/go-dcp-cassandra/cassandra"
 )
 
 type Collector struct {
