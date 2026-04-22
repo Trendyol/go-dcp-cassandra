@@ -9,6 +9,7 @@ build:
 tools:
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.3.0
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install golang.org/x/tools/go/analysis/passes/fieldalignment/cmd/fieldalignment@v0.35.0
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install golang.org/x/tools/cmd/goimports@latest
 
 .PHONY: clean
 clean:
@@ -44,3 +45,9 @@ compose:
 tidy:
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) go mod tidy
 	cd example/simple && GOTOOLCHAIN=$(GO_TOOLCHAIN) go mod tidy && cd ../..
+
+.PHONY: fmt
+fmt: tools
+	@echo "Formatting Go files..."
+	find . -type f -name '*.go' ! -name '*.gomock.go' -print0 | xargs -0 goimports -w -l -local github.com/Trendyol/go-dcp-cassandra
+

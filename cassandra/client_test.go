@@ -6,7 +6,7 @@ import (
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/stretchr/testify/assert"
 
-	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/config"
 )
 
 //nolint:funlen

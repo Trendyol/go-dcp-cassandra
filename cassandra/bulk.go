@@ -17,7 +17,7 @@ import (
 
 	"github.com/Trendyol/go-dcp/models"
 
-	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/config"
 )
 
 // BatchItem represents a single action to be written to Cassandra,

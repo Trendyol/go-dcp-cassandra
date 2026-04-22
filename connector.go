@@ -12,11 +12,13 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Trendyol/go-dcp-cassandra/cassandra"
-	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/config"
 	connectorpkg "github.com/Trendyol/go-dcp-cassandra/connector"
 	"github.com/Trendyol/go-dcp-cassandra/couchbase"
 	"github.com/Trendyol/go-dcp-cassandra/metric"
 )
+
+type Mapper func(event couchbase.Event) []cassandra.Model
 
 type Connector interface {
 	Start()

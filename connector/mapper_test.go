@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Trendyol/go-dcp-cassandra/cassandra"
-	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/config"
 	"github.com/Trendyol/go-dcp-cassandra/couchbase"
 )
 

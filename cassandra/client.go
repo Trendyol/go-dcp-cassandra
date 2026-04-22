@@ -8,7 +8,7 @@ import (
 	"github.com/apache/cassandra-gocql-driver/v2/lz4"
 	"github.com/apache/cassandra-gocql-driver/v2/snappy"
 
-	config "github.com/Trendyol/go-dcp-cassandra/configs"
+	"github.com/Trendyol/go-dcp-cassandra/config"
 )
 
 //nolint:funlen
